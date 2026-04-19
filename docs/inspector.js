@@ -1,6 +1,15 @@
 /* inspector.js - Visual Trace Tracking (v6) */
 
 class Inspector {
+	static ACTIVE_NETNODE_PRIMARY_COLOR = '#2563eb99';
+	static ACTIVE_NETNODE_PROJECTED_COLOR = '#4ade8099';
+	static NETNODE_COLOR = '#00000000';
+	static BOMNODE_COLOR = '#00000000';
+	static CURSOR_MASTER_COLOR = '#ff0000dd';
+	static CURSOR_PROJECTED_COLOR = '#facc15dd';
+
+	static ACTIVE_NETNODE_INTERACT_RADIUS = 20;
+
 	constructor(db, cv) {
 		this.db = db;
 		this.cv = cv;
@@ -17,6 +26,25 @@ class Inspector {
 
 		// Cache for image dimensions to avoid async bitmap creation on every render
 		this.resolutionCache = {};
+
+		// Compile canvas shapes ahead of time.
+		let net_marker = new Path2D();
+		{
+			const s = 20, r = 10;
+			net_marker.moveTo(0, 0);
+			net_marker.lineTo(0, -s + r);
+			net_marker.arcTo(0, -s, s, -s, r);
+			net_marker.lineTo(s - r, -s);
+			net_marker.arcTo(s, -s, s, 0, r);
+			net_marker.lineTo(s, -r);
+			net_marker.arcTo(s, 0, 0, 0, r);
+			net_marker.closePath();
+		}
+		let bom_marker = net_marker;
+		this.canvasShapes = {
+			netMarker: net_marker,
+			bomMarker: bom_marker,
+		};
 
 		// Initialization State Lock
 		this.initPromise = null;
@@ -53,12 +81,12 @@ class Inspector {
 		this.sidebarList.innerHTML = '';
 
 		const newNetBtn = document.querySelector('button[onclick="inspector.startNewNet()"]');
-		if(newNetBtn) newNetBtn.style.display = 'none';
+		if (newNetBtn) newNetBtn.style.display = 'none';
 
-		const sortedImgs = [...bomImages].sort((a,b) => {
+		const sortedImgs = [...bomImages].sort((a, b) => {
 			const nA = a.name.toLowerCase(), nB = b.name.toLowerCase();
-			if(nA.includes('top')) return -1;
-			if(nB.includes('top')) return 1;
+			if (nA.includes('top')) return -1;
+			if (nB.includes('top')) return 1;
 			return nA.localeCompare(nB);
 		});
 
@@ -81,7 +109,7 @@ class Inspector {
 			this.sidebarList.appendChild(row);
 		});
 
-		if(this.visibleIds.size === 0) {
+		if (this.visibleIds.size === 0) {
 			const isDesktop = window.matchMedia("(min-width: 800px)").matches;
 			const nextVisible = new Set();
 
@@ -178,7 +206,7 @@ class Inspector {
 		this.grid.innerHTML = '';
 		this.viewers = {};
 
-		if(this.visibleIds.size === 0) {
+		if (this.visibleIds.size === 0) {
 			this.grid.innerHTML = '<div style="display:flex; align-items:center; justify-content:center; color:#64748b; height:100%;">Select layers to inspect</div>';
 			return;
 		}
@@ -232,13 +260,13 @@ class Inspector {
 		this.grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
 		this.grid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
 
-		if(!this.masterId || !this.visibleIds.has(this.masterId)) {
+		if (!this.masterId || !this.visibleIds.has(this.masterId)) {
 			this.masterId = this.visibleIds.values().next().value;
 		}
 
-		for(const id of this.visibleIds) {
+		for (const id of this.visibleIds) {
 			const imgRec = bomImages.find(i => i.id === id);
-			if(!imgRec) continue;
+			if (!imgRec) continue;
 
 			const cell = document.createElement('div');
 			cell.style.cssText = "position:relative; overflow:hidden; border:1px solid #334155; background:#000; width:100%; height:100%; min-width:0; min-height:0;";
@@ -263,34 +291,35 @@ class Inspector {
 				async (x, y, e) => {
 					if (e.button !== 0) return;
 					if (wasActiveBeforeDown) {
-						const hit = await this.handleNodeClick(id, x, y);
+						/* const hit = await this.handleNodeClick(id, x, y);
 						if (!hit) {
 							await this.handleAddNode(id, x, y);
-						}
+						} */
+						await this.handleAddNode(id, x, y);
 					}
 				},
 				// Drag Handler
 				(dx, dy, mode, idx) => {
-					if (!this.activeNet) return -1;
+					// Verify that the active net is initialized and has nodes.
+					if (!this.activeNet || !this.activeNet.nodes || !this.activeNet.nodes.length) {
+						return -1;
+					}
 					if (mode === 'check') {
-						const cache = this.netNodeCache[id];
-						if (!cache) return -1;
-						// Only allow dragging Source (Blue) nodes
-						const foundIdx = cache.findIndex(n => {
-							if (!n.isSource) return false;
+						// Only allow dragging of primary nodes.
+						const foundIdx = this.activeNet.nodes.findIndex(n => {
+							if (n.imgId !== id) return false;
+							// dx, dy are actually in absolute coordinates here.
 							const dist = Math.hypot(n.x - dx, n.y - dy);
-							return (dist * viewer.t.k) < 20;
+							return (dist * viewer.t.k) < Inspector.ACTIVE_NETNODE_INTERACT_RADIUS;
 						});
 						return foundIdx;
 					} else if (mode === 'move') {
-						const n = this.netNodeCache[id][idx];
-						if (n && n.origNode) {
-							// Update Data Model
-							n.origNode.x += dx;
-							n.origNode.y += dy;
-							// Update Visual Cache
+						const n = this.activeNet.nodes[idx];
+						if (n) {
 							n.x += dx;
 							n.y += dy;
+							// TODO: Partial update.
+							this.updateNetNodeCache();
 							viewer.draw();
 							this.needsSync = true;
 						}
@@ -315,7 +344,7 @@ class Inspector {
 
 			// Trigger re-projection when drag ends
 			cvs.addEventListener('pointerup', () => {
-				if(this.needsSync) {
+				if (this.needsSync) {
 					this.updateNetNodeCache();
 					this.needsSync = false;
 				}
@@ -324,7 +353,7 @@ class Inspector {
 			cvs.addEventListener('wheel', () => { viewer.userInteracted = true; });
 
 			viewer.onMouseMove = (x, y) => {
-				if(this.masterId === id) this.syncCursors(id, x, y);
+				if (this.masterId === id) this.syncCursors(id, x, y);
 			};
 
 			const updateView = () => {
@@ -343,6 +372,8 @@ class Inspector {
 			viewer.onResize = (w, h) => updateView();
 
 			cvs.addEventListener('contextmenu', (e) => {
+				// TODO: Make this do something more useful than hiding the crosshair
+				//       like the ability to paintover/highlight the copper tracks.
 				e.preventDefault(); e.stopPropagation();
 				this.masterId = null;
 				this.cursorState = null;
@@ -358,16 +389,17 @@ class Inspector {
 				viewer.setImage(bmp);
 				updateView();
 
-				if(imgRec.name.toLowerCase().includes('bot') && !imgRec.name.toLowerCase().includes('top')) {
+				if (imgRec.name.toLowerCase().includes('bot') && !imgRec.name.toLowerCase().includes('top')) {
 					viewer.setMirror(true);
 				}
-			} catch(e) { console.error("Inspector img load error", e); }
+			} catch (e) { console.error("Inspector img load error", e); }
 		}
 		this.updateNetNodeCache();
 		if (this.masterId) this.syncCursors(this.masterId, null, null, true);
 	}
 
-	async handleNodeClick(imgId, x, y) {
+	// TODO: Left click to edit interacts weirdly with drag to move.
+	/* async handleNodeClick(imgId, x, y) {
 		if (!this.activeNet || !this.netNodeCache[imgId]) return false;
 		const viewer = this.viewers[imgId];
 		if (!viewer) return false;
@@ -398,10 +430,10 @@ class Inspector {
 			return true;
 		}
 		return false;
-	}
+	} */
 
 	toggleLayer(id, isVisible) {
-		if(isVisible) this.visibleIds.add(id);
+		if (isVisible) this.visibleIds.add(id);
 		else this.visibleIds.delete(id);
 		this.renderGrid();
 	}
@@ -415,46 +447,94 @@ class Inspector {
 		this.activeNet = JSON.parse(JSON.stringify(net));
 		this.updateNetUI();
 
-		if(Object.keys(this.viewers).length === 0) {
+		if (Object.keys(this.viewers).length === 0) {
 			await this.renderGrid();
 		} else {
 			Object.values(this.viewers).forEach(v => v.draw());
 		}
 	}
 
-	async updateNetNodeCache() {
-		this.netNodeCache = {};
-		if (!this.activeNet || !this.activeNet.nodes) return;
+	// TODO: projectedNetNodeCache
+	async updateProjectedNetNodeCache() {
+		// Reset net node render state and skip work if no actual nodes exist.
+		if (!this.activeNet || !this.activeNet.nodes) {
+			this.projectedNetNodeCache = {};
+			return;
+		}
 
-		// Initialize arrays for currently visible layers
-		for (const vid of this.visibleIds) this.netNodeCache[vid] = [];
+		console.log("Updating inspector projected net node cache!");
+
+		// Pre-calculate projections for currently visible layers.
+		const paths = await ImageGraph.solvePaths(node.imgId, this.cv, this.db);
+
+		// Initialize cache for currently visible layers.
+		const new_cache = {};
+		for (const vid of this.visibleIds) new_cache[vid] = [];
 
 		for (const node of this.activeNet.nodes) {
-			// 1. Direct Nodes (Source)
-			// Safety Check: Ensure the cache array exists before pushing
-			if (this.netNodeCache[node.imgId]) {
-				this.netNodeCache[node.imgId].push({
+			// Inferred/Projected Nodes.
+			for (const p of paths) {
+				const proj = this.cv.projectPoint(node.x, node.y, p.H);
+				if (proj) {
+					new_cache[p.id].push({
+						x: proj.x, y: proj.y, orig: node
+					});
+				}
+			}
+		}
+
+		// Update state and force a redraw.
+		// console.log(JSON.parse(JSON.stringify(new_cache)));
+		this.projectedNetNodeCache = new_cache;
+		// TODO: Beware of double redraws!
+		Object.values(this.viewers).forEach(v => v.draw());
+	}
+
+	async updateNetNodeCache() {
+		// Reset net node render state and skip work if no actual nodes exist.
+		if (!this.activeNet || !this.activeNet.nodes) {
+			this.netNodeCache = {};
+			return;
+		}
+
+		console.log("Updating inspector active net node cache!");
+		const new_cache = {};
+
+		// Initialize arrays for currently visible layers.
+		for (const vid of this.visibleIds) new_cache[vid] = [];
+
+		for (const node of this.activeNet.nodes) {
+			/**
+			 * 1. Direct Nodes (Source).
+			 * Ensure the relevant layer is visible and exists before pushing the node.
+			 */
+			if (new_cache[node.imgId]) {
+				new_cache[node.imgId].push({
 					x: node.x, y: node.y, label: node.label,
-					color: '#2563eb', isSource: true, origNode: node
+					color: Inspector.ACTIVE_NETNODE_PRIMARY_COLOR, isSource: true, origNode: node
 				});
 			}
 
 			// 2. Inferred Nodes (Projected)
 			const paths = await ImageGraph.solvePaths(node.imgId, this.cv, this.db);
 			for (const p of paths) {
-				// CHANGE: Check this.netNodeCache[p.id] instead of this.visibleIds.has(p.id)
-				// This prevents the crash if netNodeCache was reset by a concurrent call
-				if (this.netNodeCache[p.id]) {
+				// CHANGE: Check new_cache[p.id] instead of this.visibleIds.has(p.id).
+				// This prevents a crash if something changed by a concurrent call.
+				if (new_cache[p.id]) {
 					const proj = this.cv.projectPoint(node.x, node.y, p.H);
 					if (proj) {
-						this.netNodeCache[p.id].push({
+						new_cache[p.id].push({
 							x: proj.x, y: proj.y, label: node.label,
-							color: '#4ade80', isSource: false, origNode: node
+							color: Inspector.ACTIVE_NETNODE_PROJECTED_COLOR, isSource: false, origNode: node
 						});
 					}
 				}
 			}
 		}
+
+		// Update state and force a redraw.
+		// console.log(JSON.parse(JSON.stringify(new_cache)));
+		this.netNodeCache = new_cache;
 		Object.values(this.viewers).forEach(v => v.draw());
 	}
 
@@ -469,14 +549,14 @@ class Inspector {
 		const connectedIds = new Set(path.map(p => p.id));
 		connectedIds.add(masterId);
 
-		for(const [id, viewer] of Object.entries(this.viewers)) {
-			if(id === masterId) {
+		for (const [id, viewer] of Object.entries(this.viewers)) {
+			if (id === masterId) {
 				viewer.setDimmed(false);
 				viewer.draw();
 				continue;
 			}
 
-			if(!connectedIds.has(id)) {
+			if (!connectedIds.has(id)) {
 				viewer.cursorPos = null;
 				viewer.setDimmed(true);
 				viewer.draw();
@@ -487,7 +567,7 @@ class Inspector {
 
 			if (mx !== null && my !== null && targetPath) {
 				const pt = this.cv.projectPoint(mx, my, targetPath.H);
-				if(pt) {
+				if (pt) {
 					viewer.cursorPos = pt;
 					const w = viewer.bmp ? viewer.bmp.width : 1000;
 					const h = viewer.bmp ? viewer.bmp.height : 1000;
@@ -532,63 +612,69 @@ class Inspector {
 	drawOverlay(id, ctx, k) {
 		const viewer = this.viewers[id];
 		if (!viewer) return;
-		const ik = 1/k;
+		const ik = 1 / k;
+		// console.log(viewer, viewer.isMirrored);
 
+		const isMirrored = viewer.isMirrored && viewer.bmp;
+		const bmpWidth = isMirrored ? viewer.bmp.width : 0;
+
+		// Render active net nodes.
 		if (this.netNodeCache[id]) {
+			ctx.save();
+
+			// Common draw parameters for all net nodes.
+			ctx.lineWidth = 1.5;
+			ctx.strokeStyle = 'white';
+			ctx.fillStyle = 'white';
+			ctx.textAlign = 'center';
+			ctx.textBaseline = 'middle';
+			ctx.font = 'bold 9px sans-serif';
+
 			this.netNodeCache[id].forEach(n => {
-				let drawX = n.x;
-				if (viewer.isMirrored && viewer.bmp) drawX = viewer.bmp.width - n.x;
+				let drawX = isMirrored ? bmpWidth - n.x : n.x;
 
 				ctx.save();
 				ctx.translate(drawX, n.y);
 				ctx.scale(ik, ik);
 				ctx.rotate(-Math.PI / 4);
 
-				const s = 20, r = 10;
-				ctx.beginPath();
-				ctx.moveTo(0, 0);
-				ctx.lineTo(0, -s + r); ctx.arcTo(0, -s, s, -s, r);
-				ctx.lineTo(s - r, -s); ctx.arcTo(s, -s, s, 0, r);
-				ctx.lineTo(s, -r); ctx.arcTo(s, 0, 0, 0, r);
-				ctx.lineTo(0, 0);
-				ctx.closePath();
-
 				ctx.fillStyle = n.color;
-				ctx.fill();
-				ctx.lineWidth = 1.5;
-				ctx.strokeStyle = 'white';
-				ctx.stroke();
+				ctx.fill(this.canvasShapes.netMarker);
+				ctx.stroke(this.canvasShapes.netMarker);
 
-				ctx.translate(s/2, -s/2);
+				ctx.translate(10, -10); // s/2, -s/2
 				ctx.rotate(Math.PI / 4);
 				ctx.fillStyle = 'white';
-				ctx.textAlign = 'center';
-				ctx.textBaseline = 'middle';
-				ctx.font = 'bold 9px sans-serif';
 				ctx.fillText(n.label, 0, 0);
 				ctx.restore();
 			});
+
+			ctx.restore();
 		}
 
-		let cx, cy, color = '#ff0000';
-		if(this.cursorState && this.cursorState.masterId === id) {
-			cx = this.cursorState.mx; cy = this.cursorState.my;
-			if(viewer.isMirrored && viewer.bmp) cx = viewer.bmp.width - cx;
-		} else if (viewer.cursorPos) {
-			cx = viewer.cursorPos.x; cy = viewer.cursorPos.y;
-			if(viewer.isMirrored && viewer.bmp) cx = viewer.bmp.width - cx;
-			color = '#facc15';
+		{ // Draw crosshairs.
+			let cx, cy, color = Inspector.CURSOR_MASTER_COLOR;
+			if (this.cursorState && this.cursorState.masterId === id) {
+				cx = this.cursorState.mx; cy = this.cursorState.my;
+				if (isMirrored) cx = bmpWidth - cx;
+			} else if (viewer.cursorPos) {
+				cx = viewer.cursorPos.x; cy = viewer.cursorPos.y;
+				if (isMirrored) cx = bmpWidth - cx;
+				color = Inspector.CURSOR_PROJECTED_COLOR;
+			}
+
+			if (cx !== undefined) {
+				const len = 100000;
+				ctx.lineWidth = 1 * ik;
+				ctx.strokeStyle = color;
+				ctx.beginPath();
+				ctx.moveTo(cx - len, cy); ctx.lineTo(cx + len, cy);
+				ctx.moveTo(cx, cy - len); ctx.lineTo(cx, cy + len);
+				ctx.stroke();
+			}
 		}
 
-		if(cx !== undefined) {
-			const len = 100000;
-			ctx.lineWidth = 1 * ik;
-			ctx.strokeStyle = color;
-			ctx.beginPath();
-			ctx.moveTo(cx - len, cy); ctx.lineTo(cx + len, cy);
-			ctx.moveTo(cx, cy - len); ctx.lineTo(cx, cy + len);
-			ctx.stroke();
-		}
+		// TODO: No reason that we have to redraw all the nodes if only the crosshairs location changed.
 	}
 
 	// --- SMART NAMING LOGIC ---
@@ -667,8 +753,8 @@ class Inspector {
 		const adj = {};
 
 		overlaps.forEach(ov => {
-			if(!adj[ov.fromImageId]) adj[ov.fromImageId] = [];
-			if(!adj[ov.toImageId]) adj[ov.toImageId] = [];
+			if (!adj[ov.fromImageId]) adj[ov.fromImageId] = [];
+			if (!adj[ov.toImageId]) adj[ov.toImageId] = [];
 
 			// Determinant < 0 implies reflection (Flip)
 			const h = ov.homography;
@@ -690,7 +776,7 @@ class Inspector {
 		queue.push(startImg.id);
 		visited.add(startImg.id);
 
-		while(queue.length > 0) {
+		while (queue.length > 0) {
 			const curr = queue.shift();
 			const curPol = polarity[curr];
 
@@ -926,8 +1012,8 @@ class Inspector {
 			validateArgs: this.activeNet ? [this.activeNet.id] : null
 		});
 
-		if(label) {
-			if(!this.activeNet) this.startNewNet();
+		if (label) {
+			if (!this.activeNet) this.startNewNet();
 			this.activeNet.nodes.push({ id: uuid(), imgId: imgId, x: Math.round(x), y: Math.round(y), label: label });
 			this.updateNetUI();
 			Object.values(this.viewers).forEach(v => v.draw());
@@ -935,17 +1021,17 @@ class Inspector {
 	}
 
 	async saveNet() {
-		if(!this.activeNet) return;
+		if (!this.activeNet) return;
 		if (this.activeNet.isNew) {
 			const name = await requestInput("Save Net", "Net Name", this.activeNet.name);
-			if(name) { this.activeNet.name = name; delete this.activeNet.isNew; }
+			if (name) { this.activeNet.name = name; delete this.activeNet.isNew; }
 			else return;
 		}
 		this.activeNet.projectId = currentBomId;
 		await this.db.addNet(this.activeNet);
 		this.activeNet = null;
 		this.updateNetUI();
-		if(window.netManager) window.netManager.render();
+		if (window.netManager) window.netManager.render();
 	}
 
 	cancelNet() {
@@ -955,7 +1041,7 @@ class Inspector {
 	}
 
 	updateNetUI() {
-		if(!this.activeNet) {
+		if (!this.activeNet) {
 			this.activeNetEl.style.display = 'none';
 		} else {
 			this.activeNetEl.style.cssText = "pointer-events:auto; background:rgba(15, 23, 42, 0.9); padding:4px 10px; border-radius:20px; border:1px solid #334155; display:flex; color:white; align-items:center; gap:8px; box-shadow:0 4px 6px rgba(0,0,0,0.2); backdrop-filter:blur(4px); font-size:0.85rem; height:auto;";
