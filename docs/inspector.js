@@ -1,12 +1,16 @@
 /* inspector.js - Visual Trace Tracking (v6) */
 
 class Inspector {
-	static ACTIVE_NETNODE_PRIMARY_COLOR = '#2563eb99';
-	static ACTIVE_NETNODE_PROJECTED_COLOR = '#4ade8099';
-	static NETNODE_COLOR = '#00000000';
-	static BOMNODE_COLOR = '#00000000';
-	static CURSOR_MASTER_COLOR = '#ff0000dd';
-	static CURSOR_PROJECTED_COLOR = '#facc15dd';
+	static ACTIVE_NETNODE_PRIMARY_COLOR = '#d118a9dd';
+	static ACTIVE_NETNODE_PROJECTED_COLOR = '#33806cdd';
+	static NETNODE_COLOR = '#2b7a4899';
+	static BOMNODE_COLOR = '#795c0099';
+	static CURSOR_MASTER_COLOR = '#ef4444dd';
+	static CURSOR_PROJECTED_COLOR = '#3b82f6dd';
+	static NON_INTERACTABLE_NODE_WHITE = '#eeeeeedd';
+
+	static MARKER_S = 40;
+	static MARKER_R = 18;
 
 	static ACTIVE_NETNODE_INTERACT_RADIUS = 20;
 
@@ -21,29 +25,28 @@ class Inspector {
 		this.visibleIds = new Set();
 		this.activeNet = null;
 		this.masterId = null;
-		this.netNodeCache = {}; // Cache for calculated node positions
+		this.projectedNetNodeCache = {}; // Cache for calculated node positions
+		this.inactiveNetCache = {}; // Cache for all nets except the active one
 		this.bomCache = {}; // Cache for projected BOM coordinates
 
 		// Cache for image dimensions to avoid async bitmap creation on every render
 		this.resolutionCache = {};
 
 		// Compile canvas shapes ahead of time.
-		let net_marker = new Path2D();
+		let node_marker = new Path2D();
 		{
-			const s = 20, r = 10;
-			net_marker.moveTo(0, 0);
-			net_marker.lineTo(0, -s + r);
-			net_marker.arcTo(0, -s, s, -s, r);
-			net_marker.lineTo(s - r, -s);
-			net_marker.arcTo(s, -s, s, 0, r);
-			net_marker.lineTo(s, -r);
-			net_marker.arcTo(s, 0, 0, 0, r);
-			net_marker.closePath();
+			const s = Inspector.MARKER_S, r = Inspector.MARKER_R;
+			node_marker.moveTo(0, 0);
+			node_marker.lineTo(0, -s + r);
+			node_marker.arcTo(0, -s, s, -s, r);
+			node_marker.lineTo(s - r, -s);
+			node_marker.arcTo(s, -s, s, 0, r);
+			node_marker.lineTo(s, -r);
+			node_marker.arcTo(s, 0, 0, 0, r);
+			node_marker.closePath();
 		}
-		let bom_marker = net_marker;
 		this.canvasShapes = {
-			netMarker: net_marker,
-			bomMarker: bom_marker,
+			nodeMarker: node_marker,
 		};
 
 		// Initialization State Lock
@@ -287,7 +290,9 @@ class Inspector {
 			let stateRestored = false;
 
 			const viewer = new PanZoomCanvas(cvs.id,
+				// Redraw handler.
 				(ctx, k) => this.drawOverlay(id, ctx, k),
+				// Click handler.
 				async (x, y, e) => {
 					if (e.button !== 0) return;
 					if (wasActiveBeforeDown) {
@@ -318,8 +323,6 @@ class Inspector {
 						if (n) {
 							n.x += dx;
 							n.y += dy;
-							// TODO: Partial update.
-							this.updateNetNodeCache();
 							viewer.draw();
 							this.needsSync = true;
 						}
@@ -345,7 +348,7 @@ class Inspector {
 			// Trigger re-projection when drag ends
 			cvs.addEventListener('pointerup', () => {
 				if (this.needsSync) {
-					this.updateNetNodeCache();
+					this.updateProjectedNetNodeCacheAndRedraw();
 					this.needsSync = false;
 				}
 			});
@@ -394,11 +397,13 @@ class Inspector {
 				}
 			} catch (e) { console.error("Inspector img load error", e); }
 		}
-		this.updateNetNodeCache();
+
+		this.updateAllNetNodeCache();
+		this.updateProjectedNetNodeCache();
 		if (this.masterId) this.syncCursors(this.masterId, null, null, true);
 	}
 
-	// TODO: Left click to edit interacts weirdly with drag to move.
+	// TODO: Left click to edit label interacts weirdly with drag to move.
 	/* async handleNodeClick(imgId, x, y) {
 		if (!this.activeNet || !this.netNodeCache[imgId]) return false;
 		const viewer = this.viewers[imgId];
@@ -454,26 +459,52 @@ class Inspector {
 		}
 	}
 
-	// TODO: projectedNetNodeCache
+	async updateAllNetNodeCache() {
+		// Fetch all nets and filter in memory.
+		const allNets = await this.db.getNets();
+		const active_net_id = this.activeNet ? this.activeNet.id : null;
+		const inactiveNets = allNets.filter(n => n.projectId === currentBomId && n.id !== active_net_id);
+
+		const new_cache = {};
+		for (const id of this.visibleIds) {
+			new_cache[id] = [];
+		}
+
+		// For each net:
+		for (const net of inactiveNets) {
+			// For each node in the current net:
+			for (const node of net.nodes) {
+				// If node.imgId is a visible layer, then add to cache.
+				if (this.visibleIds.has(node.imgId)) {
+					new_cache[node.imgId].push({ x: node.x, y: node.y, orig: node });
+				}
+			}
+		}
+
+		this.inactiveNetCache = new_cache;
+	}
+
 	async updateProjectedNetNodeCache() {
 		// Reset net node render state and skip work if no actual nodes exist.
 		if (!this.activeNet || !this.activeNet.nodes) {
 			this.projectedNetNodeCache = {};
-			return;
+			return false;
 		}
 
-		console.log("Updating inspector projected net node cache!");
-
-		// Pre-calculate projections for currently visible layers.
-		const paths = await ImageGraph.solvePaths(node.imgId, this.cv, this.db);
-
-		// Initialize cache for currently visible layers.
 		const new_cache = {};
-		for (const vid of this.visibleIds) new_cache[vid] = [];
+		const layer_paths = {};
+
+		// For currently visible layers:
+		for (const vis_id of this.visibleIds) {
+			// Initialize cache.
+			new_cache[vis_id] = [];
+			// Pre-calculate projections.
+			layer_paths[vis_id] = await ImageGraph.solvePaths(vis_id, this.cv, this.db);
+		}
 
 		for (const node of this.activeNet.nodes) {
 			// Inferred/Projected Nodes.
-			for (const p of paths) {
+			for (const p of layer_paths[node.imgId]) {
 				const proj = this.cv.projectPoint(node.x, node.y, p.H);
 				if (proj) {
 					new_cache[p.id].push({
@@ -484,58 +515,14 @@ class Inspector {
 		}
 
 		// Update state and force a redraw.
-		// console.log(JSON.parse(JSON.stringify(new_cache)));
 		this.projectedNetNodeCache = new_cache;
-		// TODO: Beware of double redraws!
-		Object.values(this.viewers).forEach(v => v.draw());
+		return true;
 	}
 
-	async updateNetNodeCache() {
-		// Reset net node render state and skip work if no actual nodes exist.
-		if (!this.activeNet || !this.activeNet.nodes) {
-			this.netNodeCache = {};
-			return;
+	async updateProjectedNetNodeCacheAndRedraw() {
+		if (await this.updateProjectedNetNodeCache()) {
+			Object.values(this.viewers).forEach(v => v.draw());
 		}
-
-		console.log("Updating inspector active net node cache!");
-		const new_cache = {};
-
-		// Initialize arrays for currently visible layers.
-		for (const vid of this.visibleIds) new_cache[vid] = [];
-
-		for (const node of this.activeNet.nodes) {
-			/**
-			 * 1. Direct Nodes (Source).
-			 * Ensure the relevant layer is visible and exists before pushing the node.
-			 */
-			if (new_cache[node.imgId]) {
-				new_cache[node.imgId].push({
-					x: node.x, y: node.y, label: node.label,
-					color: Inspector.ACTIVE_NETNODE_PRIMARY_COLOR, isSource: true, origNode: node
-				});
-			}
-
-			// 2. Inferred Nodes (Projected)
-			const paths = await ImageGraph.solvePaths(node.imgId, this.cv, this.db);
-			for (const p of paths) {
-				// CHANGE: Check new_cache[p.id] instead of this.visibleIds.has(p.id).
-				// This prevents a crash if something changed by a concurrent call.
-				if (new_cache[p.id]) {
-					const proj = this.cv.projectPoint(node.x, node.y, p.H);
-					if (proj) {
-						new_cache[p.id].push({
-							x: proj.x, y: proj.y, label: node.label,
-							color: Inspector.ACTIVE_NETNODE_PROJECTED_COLOR, isSource: false, origNode: node
-						});
-					}
-				}
-			}
-		}
-
-		// Update state and force a redraw.
-		// console.log(JSON.parse(JSON.stringify(new_cache)));
-		this.netNodeCache = new_cache;
-		Object.values(this.viewers).forEach(v => v.draw());
 	}
 
 	async syncCursors(masterId, mx, my, forceRefresh = false) {
@@ -617,40 +604,110 @@ class Inspector {
 
 		const isMirrored = viewer.isMirrored && viewer.bmp;
 		const bmpWidth = isMirrored ? viewer.bmp.width : 0;
+		const o = Inspector.MARKER_S / 2;
 
-		// Render active net nodes.
-		if (this.netNodeCache[id]) {
-			ctx.save();
+		// Common draw parameters for all net nodes.
+		ctx.save();
+		ctx.lineWidth = 1.5 * ik;
+		ctx.strokeStyle = 'white';
+		ctx.fillStyle = 'white';
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+		ctx.font = 'bold 15px sans-serif';
 
-			// Common draw parameters for all net nodes.
-			ctx.lineWidth = 1.5;
-			ctx.strokeStyle = 'white';
-			ctx.fillStyle = 'white';
-			ctx.textAlign = 'center';
-			ctx.textBaseline = 'middle';
-			ctx.font = 'bold 9px sans-serif';
+		// Make non-interactable nodes distinct via a lighter dashed border.
+		ctx.strokeStyle = Inspector.NON_INTERACTABLE_NODE_WHITE;
+		ctx.setLineDash([3 * ik, 3 * ik]);
 
-			this.netNodeCache[id].forEach(n => {
+		// Render primary/direct BOM.
+		if (bomData) {
+			for (const c of bomData) {
+				if (c.imgId === id && c.x !== undefined && c.y !== undefined) {
+					let drawX = isMirrored ? bmpWidth - c.x : c.x;
+
+					ctx.save();
+					ctx.translate(drawX, c.y);
+					ctx.rotate(-Math.PI / 4);
+					ctx.fillStyle = Inspector.BOMNODE_COLOR;
+					ctx.fill(this.canvasShapes.nodeMarker);
+					ctx.stroke(this.canvasShapes.nodeMarker);
+
+					ctx.translate(o, -o);
+					ctx.rotate(Math.PI / 4);
+					ctx.fillStyle = Inspector.NON_INTERACTABLE_NODE_WHITE;
+					ctx.fillText(c.label, 0, 0);
+					ctx.restore();
+				}
+			}
+		}
+
+		// Render inactive primary net nodes.
+		if (this.inactiveNetCache[id]) {
+			for (const item of this.inactiveNetCache[id]) {
+				let drawX = isMirrored ? bmpWidth - item.x : item.x;
+
+				ctx.save();
+				ctx.translate(drawX, item.y);
+				ctx.rotate(-Math.PI / 4);
+				ctx.fillStyle = Inspector.NETNODE_COLOR;
+				ctx.fill(this.canvasShapes.nodeMarker);
+				ctx.stroke(this.canvasShapes.nodeMarker);
+
+				ctx.translate(o, -o);
+				ctx.rotate(Math.PI / 4);
+				ctx.fillStyle = Inspector.NON_INTERACTABLE_NODE_WHITE;
+				ctx.fillText(item.orig.label, 0, 0);
+				ctx.restore();
+			}
+		}
+
+		ctx.strokeStyle = 'white';
+		ctx.setLineDash([]);
+
+		// Render active primary net nodes.
+		if (this.activeNet && this.activeNet.nodes) {
+			for (const n of this.activeNet.nodes) {
+				if (n.imgId == id) {
+					let drawX = isMirrored ? bmpWidth - n.x : n.x;
+
+					ctx.save();
+					ctx.translate(drawX, n.y);
+					ctx.rotate(-Math.PI / 4);
+					ctx.fillStyle = Inspector.ACTIVE_NETNODE_PRIMARY_COLOR;
+					ctx.fill(this.canvasShapes.nodeMarker);
+					ctx.stroke(this.canvasShapes.nodeMarker);
+
+					ctx.translate(o, -o);
+					ctx.rotate(Math.PI / 4);
+					ctx.fillStyle = 'white';
+					ctx.fillText(n.label, 0, 0);
+					ctx.restore();
+				}
+			}
+		}
+
+		// Render active projected net nodes.
+		if (this.projectedNetNodeCache[id]) {
+			for (const n of this.projectedNetNodeCache[id]) {
 				let drawX = isMirrored ? bmpWidth - n.x : n.x;
 
 				ctx.save();
 				ctx.translate(drawX, n.y);
-				ctx.scale(ik, ik);
 				ctx.rotate(-Math.PI / 4);
+				ctx.fillStyle = Inspector.ACTIVE_NETNODE_PROJECTED_COLOR;
+				ctx.fill(this.canvasShapes.nodeMarker);
+				ctx.stroke(this.canvasShapes.nodeMarker);
 
-				ctx.fillStyle = n.color;
-				ctx.fill(this.canvasShapes.netMarker);
-				ctx.stroke(this.canvasShapes.netMarker);
-
-				ctx.translate(10, -10); // s/2, -s/2
+				ctx.translate(o, -o);
 				ctx.rotate(Math.PI / 4);
 				ctx.fillStyle = 'white';
-				ctx.fillText(n.label, 0, 0);
+				ctx.fillText(n.orig.label, 0, 0);
 				ctx.restore();
-			});
-
-			ctx.restore();
+			}
 		}
+
+		// End of node rendering.
+		ctx.restore();
 
 		{ // Draw crosshairs.
 			let cx, cy, color = Inspector.CURSOR_MASTER_COLOR;
@@ -1052,6 +1109,10 @@ class Inspector {
 				<button class="danger sm-btn" style="padding:0; width:20px; height:20px; min-height:0; border-radius:50%; line-height:1; display:flex; align-items:center; justify-content:center;" onclick="inspector.cancelNet()">×</button>
 			`;
 		}
-		this.updateNetNodeCache();
+
+		// Ensure inactive nets are synced before redrawing the active state
+		this.updateAllNetNodeCache().then(() => {
+			this.updateProjectedNetNodeCacheAndRedraw();
+		});
 	}
 }
