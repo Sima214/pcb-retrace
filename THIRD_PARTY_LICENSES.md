@@ -52,3 +52,38 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+---
+
+## WireBender
+**License:** GNU Affero General Public License v3.0 (AGPL-3.0) + Commercial License Option
+**URL:** https://github.com/dev-lab/WireBender
+
+WireBender is my own library. It includes third-party code from Adaptagrams:
+- libavoid
+- libcola
+- libvpsc
+
+See the Adaptagrams section below for the third-party license terms.
+
+---
+
+## Adaptagrams (libavoid, libcola, libvpsc)
+**License:** GNU Lesser General Public License v2.1 (LGPL-2.1)
+**Copyright:** (c) The Adaptagrams Authors and Contributors
+
+This software uses libavoid, libcola, and libvpsc from the Adaptagrams project, which are licensed under the LGPL v2.1. 
+You may obtain a copy of the License at:
+    https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+
+---
+
+## KiCad Symbols Library
+**License:** Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0) with KiCad Library Exception
+**Copyright:** (c) The KiCad Developers
+
+To prevent cross-origin (CORS) errors, this application hosts a redistributable copy of `kicad-symbols-master.zip`. 
+The library is licensed under CC BY-SA 4.0 with a special exception that allows you to use these symbols in your schematic designs without the design itself becoming subject to the CC BY-SA 4.0 license.
+
+Full license text and exception details can be found at:
+    https://gitlab.com/kicad/libraries/kicad-symbols/-/blob/master/LICENSE.md

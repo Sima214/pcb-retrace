@@ -96,7 +96,16 @@
 		<li><strong>Smart Naming:</strong> Click near a component to add a node. If the component is defined in the BOM, the tool <strong>auto-suggests the label</strong> (e.g., <code>R1.1</code>) using geometry (Angle & Distance). It automatically accounts for board rotation and flips pin logic for Bottom-side images.</li>
 		<li><strong>Pinout Help:</strong> Click the <button style="padding:0 5px; font-size:0.75rem; border-radius:50%; line-height:1;">?</button> button in the naming dialog to view standard conventions (e.g., "Stripe = Pin 1" for Tantalum).</li>
 		<li><strong>New Net:</strong> If no net is currently active, entering a name for a node will <strong>automatically start a new net</strong>.</li>
-		<li><strong>Export:</strong> In the Nets tab, you can export a <code>.net</code> file compatible with <strong>KiCad</strong> to help verify your reverse engineering in a professional EDA tool.</li>
+		<li><strong>Export:</strong> In the Nets tab, you can export a <code>.net</code> (KiCad) and <code>.cir</code> (SPICE) file to help verify your reverse engineering in a professional EDA tool.</li>
+	</ul>
+
+	<h3>Step 4: Schematic Generation (Schema ReTrace)</h3>
+	<p>Switch to the <strong>Schema</strong> tab to automatically generate a schematic diagram from your traced nets.</p>
+	<ul>
+		<li><strong>Auto Layout:</strong> ReTrace uses a built-in routing engine to organize components and draw wires intelligently.</li>
+		<li><strong>Interactive Editing:</strong> Drag components to rearrange them. Right-click (or long-press on mobile) to rotate or replace the symbol.</li>
+		<li><strong>KiCad Libraries:</strong> Click "Libraries" to import actual <code>.kicad_sym</code> libraries (or ZIP files) and assign standard symbols to your components.</li>
+		<li><strong>Standalone Mode:</strong> You can use this tool independently by visiting <code>schema.html</code> to visualize any standard KiCad <code>.net</code> or SPICE <code>.cir</code> netlist.</li>
 	</ul>
 
 	<h2>3. Computer Vision & Stitching</h2>
@@ -160,7 +169,7 @@
 	<h3>Live Demo</h3>
 	<p>See this feature in action at the official <strong><a href="https://dev-lab.github.io/pcb-retrace-examples/" target="_blank">PCB ReTrace Examples Gallery</a></strong>. All projects there are hosted on GitHub Pages and load via Deep Links.</p>
 	<footer>
-		Copyright &copy; 2025 Taras Greben.
+		Copyright &copy; 2025—2026 Taras Greben.
 	</footer>
 </div>
 

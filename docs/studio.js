@@ -1,9 +1,7 @@
 /* studio.js - Main Application Logic */
 
-const DB_NAME = 'PcbReTrace'; const DB_VER = 1;
-
 const ICONS = { RESISTOR: `<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="6" width="16" height="12" rx="3" fill="#bae6fd" stroke="#0ea5e9" stroke-width="1"/><rect x="7" y="6" width="2" height="12" fill="#ef4444"/><rect x="11" y="6" width="2" height="12" fill="#000000"/><rect x="15" y="6" width="2" height="12" fill="#ef4444"/><line x1="1" y1="12" x2="4" y2="12" stroke="#94a3b8" stroke-width="2"/><line x1="20" y1="12" x2="23" y2="12" stroke="#94a3b8" stroke-width="2"/></svg>`, INDUCTOR: `<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="5" width="16" height="14" rx="4" fill="#bbf7d0" stroke="#22c55e" stroke-width="1"/><rect x="7" y="5" width="2" height="14" fill="#cbd5e1"/><rect x="11" y="5" width="2" height="14" fill="#ef4444"/><rect x="15" y="5" width="2" height="14" fill="#ef4444"/><line x1="1" y1="12" x2="4" y2="12" stroke="#94a3b8" stroke-width="2"/><line x1="20" y1="12" x2="23" y2="12" stroke="#94a3b8" stroke-width="2"/></svg>`, COIL: `<svg viewBox="0 0 24 24" fill="none" stroke="#ea580c" stroke-width="2" stroke-linecap="round"><line x1="1" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="23" y2="12"/><path d="M5 12 C5 4 9 4 9 12"/><path d="M9 12 C9 19 10 19 10 12" stroke-opacity="0.5"/><path d="M10 12 C10 4 14 4 14 12"/><path d="M14 12 C14 19 15 19 15 12" stroke-opacity="0.5"/><path d="M15 12 C15 4 19 4 19 12"/></svg>` };
-const TOOL_REGISTRY = { 'R': [{url:'resistor.html',icon:ICONS.RESISTOR,title:'Resistor'}], 'L': [{url:'inductor.html',icon:ICONS.INDUCTOR,title:'Inductor'},{url:'coil.html',icon:ICONS.COIL,title:'Coil'}] };
+const TOOL_REGISTRY = { 'R': [{ url: 'resistor.html', icon: ICONS.RESISTOR, title: 'Resistor' }], 'L': [{ url: 'inductor.html', icon: ICONS.INDUCTOR, title: 'Inductor' }, { url: 'coil.html', icon: ICONS.COIL, title: 'Coil' }] };
 const MAX_DIRECT_TOOLS = 3;
 const PIN_HELP_HTML = `
 	<strong style="display:block; margin-bottom:4px;">Pin # Conventions:</strong>
@@ -18,7 +16,7 @@ const PIN_HELP_HTML = `
 `;
 
 // Global State
-let db=null, deviceList=[], currentDeviceId=null, bomList=[], currentBomId=null, bomData=[], bomImages=[], currentImgId=null, sortMode='none', editingIndex=-1, mapState={scale:1,x:0,y:0,isDragging:false,startX:0,startY:0};
+let db = null, deviceList = [], currentDeviceId = null, bomList = [], currentBomId = null, bomData = [], bomImages = [], currentImgId = null, sortMode = 'none', editingIndex = -1, mapState = { scale: 1, x: 0, y: 0, isDragging: false, startX: 0, startY: 0 };
 let skipNextFit = false;
 let returnToMap = false;
 let spyglass = null;
@@ -31,70 +29,52 @@ let currentOverlaps = [];
 let netManager = null;
 let inspector = null;
 
-// Utility: Global UUID generator (used by StitchEditor too)
-window.uuid = function(){ return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{var r=Math.random()*16|0,v=c=='x'?r:(r&0x3|0x8);return v.toString(16);}); }
-
 class PcbDatabase {
-	constructor() { this.name=DB_NAME; this.ver=DB_VER; }
-	async init() { return new Promise((r,j)=>{
-		const q=indexedDB.open(this.name,this.ver);
-		q.onupgradeneeded=e=>{
-			const d=e.target.result;
-			if(d.objectStoreNames.contains('projects')) d.deleteObjectStore('projects');
-			if(!d.objectStoreNames.contains('devices')) d.createObjectStore('devices',{keyPath:'id'});
-			if(!d.objectStoreNames.contains('boards')) { const bs=d.createObjectStore('boards',{keyPath:'id'}); bs.createIndex('deviceId','deviceId',{unique:false}); }
-			if(!d.objectStoreNames.contains('components')) { const cs=d.createObjectStore('components',{keyPath:'id'}); cs.createIndex('boardId','boardId',{unique:false}); }
-			if(!d.objectStoreNames.contains('images')) { const is=d.createObjectStore('images',{keyPath:'id'}); is.createIndex('boardId','boardId',{unique:false}); }
-
-			// v6: POI Support
-			if(!d.objectStoreNames.contains('overlappedImages')) {
-				const os=d.createObjectStore('overlappedImages',{keyPath:'id'});
-				os.createIndex('fromImageId','fromImageId');
-			}
-			// v7: Nets Store
-			if(!d.objectStoreNames.contains('nets')) {
-				const ns=d.createObjectStore('nets',{keyPath:'id'});
-				// No index needed yet as we usually load all nets for a board via manual filter or ID list
-			}
-
-		};
-		q.onsuccess=e=>{this.db=e.target.result;r()};
-		q.onerror=e=>{ console.error("DB Open Error:", e); j(e); };
-	}); }
+	constructor() { this.name = window.PcbDbCore.DB_NAME; this.ver = window.PcbDbCore.DB_VER; }
+	async init() {
+		return new Promise((r, j) => {
+			const q = indexedDB.open(this.name, this.ver);
+			q.onupgradeneeded = e => {
+				window.PcbDbCore.setupDatabase(e.target.result, e.target.transaction);
+			};
+			q.onsuccess = e => { this.db = e.target.result; r() };
+			q.onerror = e => { console.error("DB Open Error:", e); j(e); };
+		});
+	}
 
 	// Helpers
-	async _tx(s,m,cb){ return new Promise((r,j)=>{const t=this.db.transaction(s,m); const q=cb(t.objectStore(s)); q.onsuccess=()=>r(q.result); q.onerror=()=>j(q.error);}); }
-	async _ix(s,i,v){ return new Promise((r,j)=>{const q=this.db.transaction(s,'readonly').objectStore(s).index(i).getAll(v); q.onsuccess=()=>r(q.result); q.onerror=()=>j(q.error);}); }
+	async _tx(s, m, cb) { return new Promise((r, j) => { const t = this.db.transaction(s, m); const q = cb(t.objectStore(s)); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); }); }
+	async _ix(s, i, v) { return new Promise((r, j) => { const q = this.db.transaction(s, 'readonly').objectStore(s).index(i).getAll(v); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); }); }
 
 	// Core CRUD
-	async getDevices() { return this._tx('devices','readonly',s=>s.getAll()); }
-	async addDevice(d) { return this._tx('devices','readwrite',s=>s.put(d)); }
+	async getDevices() { return this._tx('devices', 'readonly', s => s.getAll()); }
+	async addDevice(d) { return this._tx('devices', 'readwrite', s => s.put(d)); }
 	async getProjectsByDevice(devId) { return this._ix('boards', 'deviceId', devId); }
-	async getProject(id) { return this._tx('boards','readonly',s=>s.get(id)); }
-	async addProject(p) { return this._tx('boards','readwrite',s=>s.put(p)); }
-	async deleteProject(id) { const cs=await this.getComponents(id); const is=await this.getImages(id); const tx=this.db.transaction(['boards','components','images'],'readwrite'); cs.forEach(c=>tx.objectStore('components').delete(c.id)); is.forEach(i=>tx.objectStore('images').delete(i.id)); tx.objectStore('boards').delete(id); return new Promise(r=>tx.oncomplete=r); }
-	async getComponents(pid) { return this._ix('components','boardId',pid); }
-	async addComponent(c) { return this._tx('components','readwrite',s=>s.put(c)); }
-	async deleteComponent(id) { return this._tx('components','readwrite',s=>s.delete(id)); }
-	async clearComponents(pid) { const cs=await this.getComponents(pid); const tx=this.db.transaction('components','readwrite'); cs.forEach(c=>tx.objectStore('components').delete(c.id)); return new Promise(r=>tx.oncomplete=r); }
-	async clearProjectData(pid) { const cs=await this.getComponents(pid); const is=await this.getImages(pid); const tx=this.db.transaction(['components','images'],'readwrite'); cs.forEach(c=>tx.objectStore('components').delete(c.id)); is.forEach(i=>tx.objectStore('images').delete(i.id)); return new Promise(r=>tx.oncomplete=r); }
-	async getImages(pid) { return this._ix('images','boardId',pid); }
-	async addImage(i) { return this._tx('images','readwrite',s=>s.put(i)); }
-	async deleteImage(id) { return this._tx('images','readwrite',s=>s.delete(id)); }
+	async getProject(id) { return this._tx('boards', 'readonly', s => s.get(id)); }
+	async addProject(p) { return this._tx('boards', 'readwrite', s => s.put(p)); }
+	async deleteProject(id) { const cs = await this.getComponents(id); const is = await this.getImages(id); const tx = this.db.transaction(['boards', 'components', 'images'], 'readwrite'); cs.forEach(c => tx.objectStore('components').delete(c.id)); is.forEach(i => tx.objectStore('images').delete(i.id)); tx.objectStore('boards').delete(id); return new Promise(r => tx.oncomplete = r); }
+	async getComponents(pid) { return this._ix('components', 'boardId', pid); }
+	async addComponent(c) { return this._tx('components', 'readwrite', s => s.put(c)); }
+	async deleteComponent(id) { return this._tx('components', 'readwrite', s => s.delete(id)); }
+	async clearComponents(pid) { const cs = await this.getComponents(pid); const tx = this.db.transaction('components', 'readwrite'); cs.forEach(c => tx.objectStore('components').delete(c.id)); return new Promise(r => tx.oncomplete = r); }
+	async clearProjectData(pid) { const cs = await this.getComponents(pid); const is = await this.getImages(pid); const tx = this.db.transaction(['components', 'images'], 'readwrite'); cs.forEach(c => tx.objectStore('components').delete(c.id)); is.forEach(i => tx.objectStore('images').delete(i.id)); return new Promise(r => tx.oncomplete = r); }
+	async getImages(pid) { return this._ix('images', 'boardId', pid); }
+	async addImage(i) { return this._tx('images', 'readwrite', s => s.put(i)); }
+	async deleteImage(id) { return this._tx('images', 'readwrite', s => s.delete(id)); }
 	async getImage(id) { return this._tx('images', 'readonly', s => s.get(id)); }
-	async getNets() { return this._tx('nets','readonly',s=>s.getAll()); }
-	async addNet(n) { return this._tx('nets','readwrite',s=>s.put(n)); }
-	async deleteNet(id) { return this._tx('nets','readwrite',s=>s.delete(id)); }
+	async getNets() { return this._tx('nets', 'readonly', s => s.getAll()); }
+	async addNet(n) { return this._tx('nets', 'readwrite', s => s.put(n)); }
+	async deleteNet(id) { return this._tx('nets', 'readwrite', s => s.delete(id)); }
 
 	// POI Extensions
-	async addOverlap(ov) { return this._tx('overlappedImages','readwrite',s=>s.put(ov)); }
+	async addOverlap(ov) { return this._tx('overlappedImages', 'readwrite', s => s.put(ov)); }
 	async getOverlapsForPair(id1, id2) {
-		 const all = await this._tx('overlappedImages','readonly',s=>s.getAll());
-		 return all.find(x => (x.fromImageId===id1 && x.toImageId===id2) || (x.fromImageId===id2 && x.toImageId===id1));
+		const all = await this._tx('overlappedImages', 'readonly', s => s.getAll());
+		return all.find(x => (x.fromImageId === id1 && x.toImageId === id2) || (x.fromImageId === id2 && x.toImageId === id1));
 	}
 	async getOverlapsForImage(id) {
-		 const all = await this._tx('overlappedImages','readonly',s=>s.getAll());
-		 return all.filter(x => x.fromImageId===id || x.toImageId===id);
+		const all = await this._tx('overlappedImages', 'readonly', s => s.getAll());
+		return all.filter(x => x.fromImageId === id || x.toImageId === id);
 	}
 	async deleteOverlapsForPair(id1, id2) {
 		const tx = this.db.transaction('overlappedImages', 'readwrite');
@@ -103,13 +83,35 @@ class PcbDatabase {
 		return new Promise(resolve => {
 			req.onsuccess = e => {
 				const all = e.target.result;
-				const toDel = all.filter(x => (x.fromImageId===id1 && x.toImageId===id2) || (x.fromImageId===id2 && x.toImageId===id1));
-				let c=0;
-				if(toDel.length===0) resolve();
-				toDel.forEach(item => { store.delete(item.id).onsuccess=()=>{ c++; if(c===toDel.length) resolve(); }});
+				const toDel = all.filter(x => (x.fromImageId === id1 && x.toImageId === id2) || (x.fromImageId === id2 && x.toImageId === id1));
+				let c = 0;
+				if (toDel.length === 0) resolve();
+				toDel.forEach(item => { store.delete(item.id).onsuccess = () => { c++; if (c === toDel.length) resolve(); } });
 			}
 		});
 	}
+	async getSchemas() { return this._tx('schemas', 'readonly', s => s.getAll()).catch(() => []); }
+	async addSchema(s) { return this._tx('schemas', 'readwrite', st => st.put(s)); }
+	async deleteSchema(id) { return this._tx('schemas', 'readwrite', st => st.delete(id)); }
+
+	async getSchemaComponents() { return this._tx('schemaComponents', 'readonly', s => s.getAll()).catch(() => []); }
+	async addSchemaComponent(sc) { return this._tx('schemaComponents', 'readwrite', s => s.put(sc)); }
+	async deleteSchemaComponent(id) { return this._tx('schemaComponents', 'readwrite', s => s.delete(id)); }
+
+	async getKicadSymbols() { return this._tx('kicadSymbols', 'readonly', s => s.getAll()).catch(() => []); }
+	async addKicadSymbol(s) { return this._tx('kicadSymbols', 'readwrite', st => st.put(s)); }
+
+	async getComponentTypes() { return this._tx('componentTypes', 'readonly', s => s.getAll()).catch(() => []); }
+	async addComponentType(ct) { return this._tx('componentTypes', 'readwrite', s => s.put(ct)); }
+
+	async getComponentTypeKicadSymbols() { return this._tx('componentTypeKicadSymbols', 'readonly', s => s.getAll()).catch(() => []); }
+	async addComponentTypeKicadSymbol(ctks) { return this._tx('componentTypeKicadSymbols', 'readwrite', s => s.put(ctks)); }
+
+	async getComponentTypePins() { return this._tx('componentTypePins', 'readonly', s => s.getAll()).catch(() => []); }
+	async addComponentTypePin(ctp) { return this._tx('componentTypePins', 'readwrite', s => s.put(ctp)); }
+
+	async getSymbolTypes() { return this._tx('symbolTypes', 'readonly', s => s.getAll()).catch(() => []); }
+	async addSymbolType(st) { return this._tx('symbolTypes', 'readwrite', s => s.put(st)); }
 }
 
 // MAIN INIT
@@ -135,21 +137,21 @@ async function init() {
 	stitchEditor = new StitchEditor(db, cvManager);
 
 	deviceList = await db.getDevices();
-	if(deviceList.length === 0) {
+	if (deviceList.length === 0) {
 		const defDev = { id: uuid(), name: 'Default Device' };
 		await db.addDevice(defDev);
 		deviceList = [defDev];
 		const bid = uuid();
-		await db.addProject({ id: bid, deviceId: defDev.id, name: 'Main Board', sortMode:'none' });
+		await db.addProject({ id: bid, deviceId: defDev.id, name: 'Main Board', sortMode: 'none' });
 	}
 
-	currentDeviceId = localStorage.getItem('pcb_dev_id') || deviceList[0].id;
+	currentDeviceId = localStorage.getItem('pcb_device_id') || deviceList[0].id;
 	if (!deviceList.find(d => d.id === currentDeviceId)) currentDeviceId = deviceList[0].id;
 
 	updateDeviceDropdown();
 	await loadDeviceBoms();
 
-	document.getElementById('add-form').addEventListener('keydown', function(e) { if(e.key === 'Enter') addPart(); });
+	document.getElementById('add-form').addEventListener('keydown', function (e) { if (e.key === 'Enter') addPart(); });
 	if (typeof PcbSpyglass !== 'undefined') {
 		spyglass = new PcbSpyglass('preview-canvas', 'zoom-level', (newX, newY) => {
 			// When user drags the spyglass, update the hidden inputs (only for the Main View)
@@ -177,6 +179,11 @@ async function init() {
 
 	setupDragDrop();
 	NavManager.init();
+	const startupTab = localStorage.getItem('pcb_startup_tab');
+	if (startupTab) {
+		localStorage.removeItem('pcb_startup_tab');
+		setTimeout(() => switchView(startupTab), 100);
+	}
 }
 
 // Helper: Find all transitive connections for a given image
@@ -195,10 +202,10 @@ async function getConnectedImages(targetImgId) {
 }
 
 function updateDeviceDropdown() {
-	const s = document.getElementById('device-select'); s.innerHTML='';
+	const s = document.getElementById('device-select'); s.innerHTML = '';
 	deviceList.forEach(d => {
-		const o = document.createElement('option'); o.value=d.id; o.innerText=d.name;
-		if(d.id===currentDeviceId) o.selected=true;
+		const o = document.createElement('option'); o.value = d.id; o.innerText = d.name;
+		if (d.id === currentDeviceId) o.selected = true;
 		s.appendChild(o);
 	});
 }
@@ -206,13 +213,13 @@ function updateDeviceDropdown() {
 async function switchDevice() {
 	resetStickyEditor();
 	currentDeviceId = document.getElementById('device-select').value;
-	localStorage.setItem('pcb_dev_id', currentDeviceId);
+	localStorage.setItem('pcb_device_id', currentDeviceId);
 	await loadDeviceBoms();
 }
 
 async function loadDeviceBoms() {
 	bomList = await db.getProjectsByDevice(currentDeviceId);
-	const s = document.getElementById('bom-select'); s.innerHTML='';
+	const s = document.getElementById('bom-select'); s.innerHTML = '';
 	if (bomList.length === 0) {
 		s.innerHTML = '<option disabled selected>No Boards</option>';
 		currentBomId = null;
@@ -220,19 +227,19 @@ async function loadDeviceBoms() {
 		const groups = {};
 		bomList.forEach(b => {
 			const sec = b.section || "General";
-			if(!groups[sec]) groups[sec] = [];
+			if (!groups[sec]) groups[sec] = [];
 			groups[sec].push(b);
 		});
 		for (const [secName, boms] of Object.entries(groups)) {
 			const grp = document.createElement('optgroup'); grp.label = secName;
 			boms.forEach(b => {
-				const o = document.createElement('option'); o.value=b.id; o.innerText=b.name;
+				const o = document.createElement('option'); o.value = b.id; o.innerText = b.name;
 				grp.appendChild(o);
 			});
 			s.appendChild(grp);
 		}
-		const lastBom = localStorage.getItem('pcb_bom_id');
-		currentBomId = (lastBom && bomList.find(b=>b.id===lastBom)) ? lastBom : bomList[0].id;
+		const lastBom = localStorage.getItem('pcb_board_id');
+		currentBomId = (lastBom && bomList.find(b => b.id === lastBom)) ? lastBom : bomList[0].id;
 		s.value = currentBomId;
 	}
 	await loadProjectData();
@@ -241,7 +248,7 @@ async function loadDeviceBoms() {
 async function switchBom() {
 	resetStickyEditor();
 	currentBomId = document.getElementById('bom-select').value;
-	localStorage.setItem('pcb_bom_id', currentBomId);
+	localStorage.setItem('pcb_board_id', currentBomId);
 	currentImgId = null;
 	await loadProjectData();
 }
@@ -256,6 +263,10 @@ async function loadProjectData() {
 			window.inspector.activeNet = null; // Reset active net
 			await window.inspector.init(); // Rebuild sidebar & grid
 		}
+		const schemaView = document.getElementById('view-schema');
+		if (schemaView && schemaView.classList.contains('active')) {
+			switchView('schema');
+		}
 	};
 
 	if (!currentBomId) {
@@ -265,13 +276,13 @@ async function loadProjectData() {
 
 		// FIX: Clear other views if no board selected
 		const imgSel = document.getElementById('image-select');
-		if(imgSel) imgSel.innerHTML = '<option disabled selected>No Images</option>';
+		if (imgSel) imgSel.innerHTML = '<option disabled selected>No Images</option>';
 		clearMap();
 		await refreshViews();
 		return;
 	}
 
-	const meta = bomList.find(p=>p.id===currentBomId);
+	const meta = bomList.find(p => p.id === currentBomId);
 	if (meta) {
 		sortMode = (meta && meta.sortMode) ? meta.sortMode : 'none';
 		document.getElementById('sort-select').value = sortMode;
@@ -290,17 +301,17 @@ async function loadProjectData() {
 
 	const imgSel = document.getElementById('image-select');
 	imgSel.innerHTML = '';
-	if(bomImages.length > 0) {
+	if (bomImages.length > 0) {
 		bomImages.forEach(img => {
 			const opt = document.createElement('option');
 			opt.value = img.id; opt.innerText = img.name;
 			imgSel.appendChild(opt);
 		});
-		if(!currentImgId || !bomImages.find(i=>i.id===currentImgId)) currentImgId = bomImages[0].id;
+		if (!currentImgId || !bomImages.find(i => i.id === currentImgId)) currentImgId = bomImages[0].id;
 		imgSel.value = currentImgId;
 
 		// Only load the image if we are actually on the map tab
-		if(document.getElementById('view-map').classList.contains('active')) showImage(currentImgId);
+		if (document.getElementById('view-map').classList.contains('active')) showImage(currentImgId);
 	} else {
 		currentImgId = null;
 		imgSel.innerHTML = '<option disabled selected>No Images</option>';
@@ -330,11 +341,11 @@ async function createNewDevice() {
 async function createNewBom() {
 	if (!currentDeviceId) return alert("Select a device first.");
 	const n = await requestInput("New Board", "Board Name", "");
-	if(n) {
+	if (n) {
 		const sec = await requestInput("Section", "Group (Optional)", "") || "";
-		const id=uuid();
-		await db.addProject({id, deviceId: currentDeviceId, name:n, section: sec, lastModified:Date.now(), sortMode:'none'});
-		currentBomId=id;
+		const id = uuid();
+		await db.addProject({ id, deviceId: currentDeviceId, name: n, section: sec, lastModified: Date.now(), sortMode: 'none' });
+		currentBomId = id;
 		await loadDeviceBoms();
 	}
 }
@@ -421,11 +432,11 @@ async function deleteCurrentDevice() {
 			await db.addDevice(defDev);
 			deviceList = [defDev];
 			const bid = uuid();
-			await db.addProject({ id: bid, deviceId: defDev.id, name: 'Main Board', sortMode:'none' });
+			await db.addProject({ id: bid, deviceId: defDev.id, name: 'Main Board', sortMode: 'none' });
 		}
 
 		currentDeviceId = deviceList[0].id;
-		localStorage.setItem('pcb_dev_id', currentDeviceId);
+		localStorage.setItem('pcb_device_id', currentDeviceId);
 
 		updateDeviceDropdown();
 		await loadDeviceBoms();
@@ -446,24 +457,24 @@ async function addPart() {
 	const y = document.getElementById('inp-y').value;
 	const imgId = document.getElementById('inp-img-id').value;
 
-	if(!label) return alert("Ref required");
+	if (!label) return alert("Ref required");
 
 	// Check collision
 	const collision = bomData.find(c => c.label === label && c.id !== id);
 	if (collision) {
-		if(!await confirmAction("Reference exists. Overwrite?", "Overwrite")) return;
+		if (!await confirmAction("Reference exists. Overwrite?", "Overwrite")) return;
 		await db.deleteComponent(collision.id);
 	}
 
 	// Save
 	const c = { id: id || uuid(), boardId: currentBomId, label, value, desc };
-	if(x && y && imgId) { c.x = parseFloat(x); c.y = parseFloat(y); c.imgId = imgId; }
+	if (x && y && imgId) { c.x = parseFloat(x); c.y = parseFloat(y); c.imgId = imgId; }
 
 	await db.addComponent(c);
 	document.getElementById('inp-id').value = c.id;
 	await loadProjectData();
 
-	if(returnToMap) { switchView('map'); returnToMap = false; }
+	if (returnToMap) { switchView('map'); returnToMap = false; }
 	else {
 		// Optional: blink the button or give feedback
 		const btn = document.querySelector('.btn-add');
@@ -487,10 +498,107 @@ async function deleteCurrentPart() {
 }
 
 // --- IMPORT / EXPORT ---
+// --- SCHEMA DEPENDENCY RESOLVERS ---
+async function gatherSchemaDependencies(schemaComps) {
+	const usedCTIds = new Set(schemaComps.map(sc => sc.componentTypeId).filter(Boolean));
+	const componentTypes = (await db.getComponentTypes() || []).filter(ct => usedCTIds.has(ct.id));
+
+	const usedSymbolTypeIds = new Set(componentTypes.map(ct => ct.symbolTypeId).filter(Boolean));
+	const allSymbolTypes = await db.getSymbolTypes() || [];
+	const symbolTypes = [];
+	const addSymType = (id) => {
+		if (!id) return;
+		const st = allSymbolTypes.find(s => s.id === id);
+		if (st && !symbolTypes.some(s => s.id === id)) {
+			symbolTypes.push(st);
+			addSymType(st.parentId);
+		}
+	};
+	usedSymbolTypeIds.forEach(addSymType);
+
+	const componentTypePins = (await db.getComponentTypePins() || []).filter(p => usedCTIds.has(p.componentTypeId));
+
+	const componentTypeKicadSymbols = (await db.getComponentTypeKicadSymbols() || []).filter(ck => usedCTIds.has(ck.componentTypeId));
+	const usedKSIds = new Set(componentTypeKicadSymbols.map(ck => ck.kicadSymbolId).filter(Boolean));
+	const kicadSymbols = (await db.getKicadSymbols() || []).filter(ks => usedKSIds.has(ks.id));
+
+	return { componentTypes, symbolTypes, componentTypePins, componentTypeKicadSymbols, kicadSymbols };
+}
+
+async function importSchemaDependencies(schemaDeps, idMap) {
+	if (!schemaDeps) return;
+
+	const existingSTs = await db.getSymbolTypes() || [];
+	for (const st of schemaDeps.symbolTypes || []) {
+		const existing = existingSTs.find(e => e.name === st.name);
+		if (existing) { idMap.set(st.id, existing.id); } else {
+			const newSt = { ...st, id: uuid() };
+			idMap.set(st.id, newSt.id);
+			await db.addSymbolType(newSt);
+			existingSTs.push(newSt);
+		}
+	}
+	for (const st of schemaDeps.symbolTypes || []) {
+		if (idMap.has(st.id) && idMap.get(st.id) !== st.id && st.parentId && idMap.has(st.parentId)) {
+			const actualSt = existingSTs.find(e => e.id === idMap.get(st.id));
+			if (actualSt && actualSt.parentId !== idMap.get(st.parentId)) {
+				actualSt.parentId = idMap.get(st.parentId);
+				await db.addSymbolType(actualSt);
+			}
+		}
+	}
+
+	const existingKSs = await db.getKicadSymbols() || [];
+	for (const ks of schemaDeps.kicadSymbols || []) {
+		const existing = existingKSs.find(e => e.library === ks.library && e.symbol === ks.symbol);
+		if (existing) { idMap.set(ks.id, existing.id); } else {
+			const newKs = { ...ks, id: uuid() };
+			idMap.set(ks.id, newKs.id);
+			await db.addKicadSymbol(newKs);
+			existingKSs.push(newKs);
+		}
+	}
+
+	const existingCTs = await db.getComponentTypes() || [];
+	for (const ct of schemaDeps.componentTypes || []) {
+		const existing = existingCTs.find(e => e.name === ct.name);
+		if (existing) { idMap.set(ct.id, existing.id); } else {
+			const newCt = { ...ct, id: uuid(), symbolTypeId: idMap.get(ct.symbolTypeId) || ct.symbolTypeId };
+			idMap.set(ct.id, newCt.id);
+			await db.addComponentType(newCt);
+			existingCTs.push(newCt);
+		}
+	}
+
+	const existingCTPs = await db.getComponentTypePins() || [];
+	for (const ctp of schemaDeps.componentTypePins || []) {
+		const mappedCtId = idMap.get(ctp.componentTypeId) || ctp.componentTypeId;
+		const existing = existingCTPs.find(e => e.componentTypeId === mappedCtId && e.name === ctp.name);
+		if (existing) { idMap.set(ctp.id, existing.id); } else {
+			const newCtp = { ...ctp, id: uuid(), componentTypeId: mappedCtId };
+			idMap.set(ctp.id, newCtp.id);
+			await db.addComponentTypePin(newCtp);
+			existingCTPs.push(newCtp);
+		}
+	}
+
+	const existingCTKSs = await db.getComponentTypeKicadSymbols() || [];
+	for (const ctks of schemaDeps.componentTypeKicadSymbols || []) {
+		const mappedCtId = idMap.get(ctks.componentTypeId) || ctks.componentTypeId;
+		const mappedKsId = idMap.get(ctks.kicadSymbolId) || ctks.kicadSymbolId;
+		const existing = existingCTKSs.find(e => e.componentTypeId === mappedCtId && e.kicadSymbolId === mappedKsId);
+		if (existing) { idMap.set(ctks.id, existing.id); } else {
+			const newCtks = { ...ctks, id: uuid(), componentTypeId: mappedCtId, kicadSymbolId: mappedKsId };
+			idMap.set(ctks.id, newCtks.id);
+			await db.addComponentTypeKicadSymbol(newCtks);
+			existingCTKSs.push(newCtks);
+		}
+	}
+}
 // Device Export
 async function exportDeviceZIP() {
-	if(!window.JSZip) return alert("JSZip required.");
-	if(!currentDeviceId) return;
+	if (!window.JSZip) return alert("JSZip required.");
+	if (!currentDeviceId) return;
 
 	const dev = deviceList.find(d => d.id === currentDeviceId);
 	const boms = await db.getProjectsByDevice(currentDeviceId);
@@ -498,6 +606,8 @@ async function exportDeviceZIP() {
 
 	// Fetch ALL nets once (since we don't have an index, we filter in JS)
 	const allNets = await db.getNets();
+	const allSchemas = await db.getSchemas();
+	const allSchemaComps = await db.getSchemaComponents();
 
 	// 1. Generate README
 	const readmeContent = `PCB ReTrace Data Export
@@ -527,9 +637,12 @@ HOW TO USE:
 
 		// Filter nets for this specific board
 		const boardNets = allNets.filter(n => n.projectId === bom.id);
+		const boardSchemas = allSchemas.filter(s => s.boardId === bom.id);
+		const boardSchemaIds = new Set(boardSchemas.map(s => s.id));
+		const boardSchemaComps = allSchemaComps.filter(sc => boardSchemaIds.has(sc.schemaId));
 
 		const overlapsMap = new Map();
-		for(const img of imgs) {
+		for (const img of imgs) {
 			const ovs = await db.getOverlapsForImage(img.id);
 			ovs.forEach(o => overlapsMap.set(o.id, o));
 		}
@@ -542,7 +655,9 @@ HOW TO USE:
 			components: cleanComps,
 			images: imgMeta,
 			overlaps: Array.from(overlapsMap.values()),
-			nets: boardNets // Add Nets to manifest
+			nets: boardNets,
+			schemas: boardSchemas,
+			schemaComponents: boardSchemaComps
 		});
 
 		// Image Loop
@@ -561,8 +676,17 @@ HOW TO USE:
 		}
 	}
 
+	manifest.deviceSchemas = allSchemas.filter(s => s.deviceId === dev.id && !s.boardId);
+	const devSchemaIds = new Set(manifest.deviceSchemas.map(s => s.id));
+	manifest.deviceSchemaComponents = allSchemaComps.filter(sc => devSchemaIds.has(sc.schemaId));
+
+	const exportedSchemaComps = manifest.deviceSchemaComponents.concat(
+		manifest.boards.flatMap(b => b.schemaComponents || [])
+	);
+	manifest.schemaDependencies = await gatherSchemaDependencies(exportedSchemaComps);
+
 	zip.file("device.json", JSON.stringify(manifest, null, 2));
-	zip.generateAsync({type:"blob"}).then(c => dl(c, `${dev.name}_Backup.zip`, 'application/zip'));
+	zip.generateAsync({ type: "blob" }).then(c => dl(c, `${dev.name}_Backup.zip`, 'application/zip'));
 }
 
 function isValidBoardData(data) {
@@ -612,17 +736,17 @@ function isValidLegacyData(data) {
 }
 
 async function importFile(f) {
-	if(!f) return;
+	if (!f) return;
 	const name = f.name.toLowerCase();
 
 	// 1. ZIP Import (Device Backup or Board Export)
-	if(name.endsWith('.zip')) {
+	if (name.endsWith('.zip')) {
 		await processZIP(f);
 		return;
 	}
 
 	// 2. JSON Import (Metadata only)
-	if(name.endsWith('.json')) {
+	if (name.endsWith('.json')) {
 		const r = new FileReader();
 		r.onload = async e => {
 			try {
@@ -630,7 +754,7 @@ async function importFile(f) {
 
 				if (isValidBoardData(json)) {
 					if (!currentDeviceId) return alert("Select a Device first.");
-					if(confirm(`Import Board "${json.meta.name}" from JSON?`)) {
+					if (confirm(`Import Board "${json.meta.name}" from JSON?`)) {
 						json.meta.deviceId = currentDeviceId;
 						await processImportData(json, null);
 					}
@@ -639,20 +763,20 @@ async function importFile(f) {
 
 				if (isValidDeviceManifest(json)) {
 					alert("Device Manifests should be imported via ZIP to include images.\nImporting metadata only.");
-					if(confirm("Proceed with metadata-only import?")) {
+					if (confirm("Proceed with metadata-only import?")) {
 						await restoreDevice(json, null);
 					}
 					return;
 				}
 
 				if (isValidLegacyData(json)) {
-					if(confirm("Detected Legacy BOM format. Import into current board?")) {
+					if (confirm("Detected Legacy BOM format. Import into current board?")) {
 						await processLegacyImport(json);
 					}
 					return;
 				}
 				throw new Error("JSON structure does not match known schemas.");
-			} catch(e) {
+			} catch (e) {
 				console.error(e);
 				alert("Invalid JSON: " + e.message);
 			}
@@ -662,9 +786,9 @@ async function importFile(f) {
 	}
 
 	// 3. Image Import (Drag & Drop -> Open Editor)
-	if(/\.(jpg|jpeg|png|webp)$/i.test(name)) {
+	if (/\.(jpg|jpeg|png|webp)$/i.test(name)) {
 		// SAFETY: Ensure a board is currently active
-		if(!currentBomId) {
+		if (!currentBomId) {
 			alert("Cannot import image: No board selected.\nPlease select or create a board first.");
 			return;
 		}
@@ -674,14 +798,14 @@ async function importFile(f) {
 		r.onload = e => {
 			if (typeof ImageImporter !== 'undefined') {
 				// Pre-fill the name
-				if(ImageImporter.nameInput) {
+				if (ImageImporter.nameInput) {
 					ImageImporter.nameInput.value = f.name.replace(/\.[^/.]+$/, "");
 				}
 				// Open the Modal
 				ImageImporter.loadImage(e.target.result);
 			} else {
 				// Fallback if UI not loaded (unlikely)
-				if(confirm(`Import image "${f.name}"?`)) {
+				if (confirm(`Import image "${f.name}"?`)) {
 					saveProcessedImageToDB(f, f.name);
 				}
 			}
@@ -694,7 +818,7 @@ async function importFile(f) {
 // Button Handler (keeps input element logic)
 function handleImport(i) {
 	const f = i.files[0];
-	if(f) importFile(f);
+	if (f) importFile(f);
 	i.value = ''; // Reset input so same file can be selected again
 }
 
@@ -713,7 +837,7 @@ function setupDragDrop() {
 	zone.addEventListener('dragleave', e => {
 		e.preventDefault();
 		dragCounter--;
-		if(dragCounter === 0) zone.classList.remove('drag-active');
+		if (dragCounter === 0) zone.classList.remove('drag-active');
 	});
 
 	// 3. Drag Over (Required to allow dropping)
@@ -733,7 +857,7 @@ function setupDragDrop() {
 }
 
 async function processZIP(file) {
-	if(!window.JSZip) return alert("JSZip library not loaded.");
+	if (!window.JSZip) return alert("JSZip library not loaded.");
 
 	try {
 		const zip = await JSZip.loadAsync(file);
@@ -743,7 +867,7 @@ async function processZIP(file) {
 		if (zip.file("device.json")) {
 			const content = await zip.file("device.json").async("string");
 			let manifest;
-			try { manifest = JSON.parse(content); } catch(e) { throw new Error("device.json is corrupt"); }
+			try { manifest = JSON.parse(content); } catch (e) { throw new Error("device.json is corrupt"); }
 
 			// STRICT CHECK
 			if (isValidDeviceManifest(manifest)) {
@@ -751,7 +875,7 @@ async function processZIP(file) {
 				const vMsg = manifest.version ? `(v${manifest.version})` : '';
 				const sMsg = manifest.source ? `\nSource: ${manifest.source}` : '';
 
-				if(confirm(`Restore Device: "${manifest.device.name}" ${vMsg}?${sMsg}\n\nThis will merge boards and overwrite existing components.`)) {
+				if (confirm(`Restore Device: "${manifest.device.name}" ${vMsg}?${sMsg}\n\nThis will merge boards and overwrite existing components.`)) {
 					await restoreDevice(manifest, zip);
 				}
 			} else {
@@ -763,7 +887,7 @@ async function processZIP(file) {
 		else if (zip.file("bom.json")) {
 			const content = await zip.file("bom.json").async("string");
 			let data;
-			try { data = JSON.parse(content); } catch(e) { throw new Error("bom.json is corrupt"); }
+			try { data = JSON.parse(content); } catch (e) { throw new Error("bom.json is corrupt"); }
 
 			// STRICT CHECK
 			if (isValidBoardData(data)) {
@@ -772,7 +896,7 @@ async function processZIP(file) {
 					alert("Please select or create a Device first.");
 					return;
 				}
-				if(confirm(`Import Board: "${data.meta.name}" into current Device?`)) {
+				if (confirm(`Import Board: "${data.meta.name}" into current Device?`)) {
 					data.meta.deviceId = currentDeviceId;
 					await processImportData(data, zip);
 				}
@@ -785,7 +909,7 @@ async function processZIP(file) {
 			alert("Unrecognized ZIP format.\n\nExpected 'device.json' or 'bom.json' with valid structure.");
 		}
 
-	} catch(e) {
+	} catch (e) {
 		console.error(e);
 		alert("Import Failed: " + e.message);
 	}
@@ -796,6 +920,10 @@ async function restoreDevice(manifest, zip) {
 	const existingDev = deviceList.find(d => d.id === devId);
 	if (!existingDev) {
 		await db.addDevice(manifest.device);
+	}
+	const idMap = new Map();
+	if (manifest.schemaDependencies) {
+		await importSchemaDependencies(manifest.schemaDependencies, idMap);
 	}
 
 	// --- PRUNING PHASE 1: BOARDS ---
@@ -827,27 +955,27 @@ async function restoreDevice(manifest, zip) {
 			// Update Meta
 			boardData.meta.deviceId = devId;
 			await db.addProject(boardData.meta);
-			if(localBoard) updatedBoards++;
+			if (localBoard) updatedBoards++;
 
 			// --- PRUNING PHASE 2: CONTENT ---
 			// 1. Prune Components
 			const localComps = await db.getComponents(boardId);
 			const importCompIds = new Set(boardData.components.map(c => c.id));
-			for(const lc of localComps) {
-				if(!importCompIds.has(lc.id)) await db.deleteComponent(lc.id);
+			for (const lc of localComps) {
+				if (!importCompIds.has(lc.id)) await db.deleteComponent(lc.id);
 			}
 
 			// 2. Prune Images
 			const localImages = await db.getImages(boardId);
 			const importImgIds = new Set(boardData.images.map(i => i.id));
-			for(const li of localImages) {
-				if(!importImgIds.has(li.id)) await db.deleteImage(li.id);
+			for (const li of localImages) {
+				if (!importImgIds.has(li.id)) await db.deleteImage(li.id);
 			}
 
 			// 3. Prune Overlaps
-			if(localImages.length > 0) {
+			if (localImages.length > 0) {
 				const boardOverlapIds = new Set();
-				for(const li of localImages) {
+				for (const li of localImages) {
 					const ovs = await db.getOverlapsForImage(li.id);
 					ovs.forEach(o => boardOverlapIds.add(o.id));
 				}
@@ -855,16 +983,24 @@ async function restoreDevice(manifest, zip) {
 				const tx = db.db.transaction('overlappedImages', 'readwrite');
 				const store = tx.objectStore('overlappedImages');
 				boardOverlapIds.forEach(ovid => {
-					if(!importOvIds.has(ovid)) store.delete(ovid);
+					if (!importOvIds.has(ovid)) store.delete(ovid);
 				});
 			}
 
-			// 4. Prune Nets [NEW]
+			// 4. Prune Nets
 			const allNets = await db.getNets();
 			const localNets = allNets.filter(n => n.projectId === boardId);
 			const importNetIds = new Set((boardData.nets || []).map(n => n.id));
-			for(const ln of localNets) {
-				if(!importNetIds.has(ln.id)) await db.deleteNet(ln.id);
+			for (const ln of localNets) {
+				if (!importNetIds.has(ln.id)) await db.deleteNet(ln.id);
+			}
+
+			// 5. Prune Schemas
+			const allSchemas = await db.getSchemas();
+			const localSchemas = allSchemas.filter(s => s.boardId === boardId);
+			const importSchemaIds = new Set((boardData.schemas || []).map(s => s.id));
+			for (const ls of localSchemas) {
+				if (!importSchemaIds.has(ls.id)) await db.deleteSchema(ls.id);
 			}
 
 		} else {
@@ -921,7 +1057,7 @@ async function restoreDevice(manifest, zip) {
 			}
 		}
 
-		// Nets [NEW]
+		// Nets
 		if (boardData.nets) {
 			for (const net of boardData.nets) {
 				// Ensure correct association
@@ -934,6 +1070,54 @@ async function restoreDevice(manifest, zip) {
 				}
 			}
 		}
+
+		// Schemas
+		if (boardData.schemas) {
+			for (const schema of boardData.schemas) {
+				schema.boardId = boardId;
+				schema.deviceId = devId;
+				if (isNewer) {
+					await db.addSchema(schema);
+				} else {
+					const existing = await db._tx('schemas', 'readonly', s => s.get(schema.id));
+					if (!existing) await db.addSchema(schema);
+				}
+			}
+		}
+
+		// SchemaComponents
+		if (boardData.schemaComponents) {
+			for (const sc of boardData.schemaComponents) {
+				if (sc.componentTypeId && idMap.has(sc.componentTypeId)) {
+					sc.componentTypeId = idMap.get(sc.componentTypeId);
+				}
+				if (isNewer) {
+					await db.addSchemaComponent(sc);
+				} else {
+					const existing = await db._tx('schemaComponents', 'readonly', s => s.get(sc.id));
+					if (!existing) await db.addSchemaComponent(sc);
+				}
+			}
+		}
+	}
+
+	// Upsert device-level schemas
+	if (manifest.deviceSchemas) {
+		for (const schema of manifest.deviceSchemas) {
+			schema.deviceId = devId;
+			schema.boardId = null;
+			const existing = await db._tx('schemas', 'readonly', s => s.get(schema.id));
+			if (!existing) await db.addSchema(schema);
+		}
+	}
+	if (manifest.deviceSchemaComponents) {
+		for (const sc of manifest.deviceSchemaComponents) {
+			if (sc.componentTypeId && idMap.has(sc.componentTypeId)) {
+				sc.componentTypeId = idMap.get(sc.componentTypeId);
+			}
+			const existing = await db._tx('schemaComponents', 'readonly', s => s.get(sc.id));
+			if (!existing) await db.addSchemaComponent(sc);
+		}
 	}
 
 	deviceList = await db.getDevices();
@@ -943,6 +1127,10 @@ async function restoreDevice(manifest, zip) {
 }
 
 async function processImportData(data, zipObj) {
+	const idMap = new Map();
+	if (data.schemaDependencies) {
+		await importSchemaDependencies(data.schemaDependencies, idMap);
+	}
 	const boardId = data.meta.id;
 	const localBoard = await db.getProject(boardId);
 
@@ -960,21 +1148,21 @@ async function processImportData(data, zipObj) {
 		// 1. Components
 		const localComps = await db.getComponents(boardId);
 		const importCompIds = new Set(data.components.map(c => c.id));
-		for(const lc of localComps) {
-			if(!importCompIds.has(lc.id)) await db.deleteComponent(lc.id);
+		for (const lc of localComps) {
+			if (!importCompIds.has(lc.id)) await db.deleteComponent(lc.id);
 		}
 
 		// 2. Images
 		const localImages = await db.getImages(boardId);
 		const importImgIds = new Set((data.images || []).map(i => i.id));
-		for(const li of localImages) {
-			if(!importImgIds.has(li.id)) await db.deleteImage(li.id);
+		for (const li of localImages) {
+			if (!importImgIds.has(li.id)) await db.deleteImage(li.id);
 		}
 
 		// 3. Overlaps
-		if(localImages.length > 0) {
+		if (localImages.length > 0) {
 			const boardOverlapIds = new Set();
-			for(const li of localImages) {
+			for (const li of localImages) {
 				const ovs = await db.getOverlapsForImage(li.id);
 				ovs.forEach(o => boardOverlapIds.add(o.id));
 			}
@@ -982,18 +1170,27 @@ async function processImportData(data, zipObj) {
 			const tx = db.db.transaction('overlappedImages', 'readwrite');
 			const store = tx.objectStore('overlappedImages');
 			boardOverlapIds.forEach(ovid => {
-				if(!importOvIds.has(ovid)) store.delete(ovid);
+				if (!importOvIds.has(ovid)) store.delete(ovid);
 			});
 		}
 
-		// 4. Nets [NEW]
+		// 4. Nets
 		const allNets = await db.getNets();
 		const localNets = allNets.filter(n => n.projectId === boardId);
 		const importNetIds = new Set((data.nets || []).map(n => n.id));
-		for(const ln of localNets) {
-			if(!importNetIds.has(ln.id)) await db.deleteNet(ln.id);
+		for (const ln of localNets) {
+			if (!importNetIds.has(ln.id)) await db.deleteNet(ln.id);
 		}
 
+		// 5. Schemas
+		const allSchemas = await db.getSchemas();
+		const localSchemas = allSchemas.filter(s => s.boardId === boardId);
+		const safeSchemas = data.schemas || new Array();
+		const importSchemaIds = new Set(safeSchemas.map(s => s.id));
+
+		for (const ls of localSchemas) {
+			if (!importSchemaIds.has(ls.id)) await db.deleteSchema(ls.id);
+		}
 	} else {
 		console.log("Import is older/same. Merging missing items only.");
 	}
@@ -1007,7 +1204,7 @@ async function processImportData(data, zipObj) {
 			const imgFiles = [];
 			imgFolder.forEach((path, file) => imgFiles.push(file));
 
-			for(const f of imgFiles) {
+			for (const f of imgFiles) {
 				const fileName = f.name.split('/').pop();
 				const idFromName = fileName.split('.')[0];
 
@@ -1030,7 +1227,7 @@ async function processImportData(data, zipObj) {
 	}
 
 	// Components
-	for(const c of data.components) {
+	for (const c of data.components) {
 		c.boardId = boardId;
 		if (isNewer) {
 			await db.addComponent(c);
@@ -1052,7 +1249,7 @@ async function processImportData(data, zipObj) {
 		}
 	}
 
-	// Nets [NEW]
+	// Nets
 	if (data.nets) {
 		for (const net of data.nets) {
 			net.projectId = boardId;
@@ -1065,20 +1262,50 @@ async function processImportData(data, zipObj) {
 		}
 	}
 
+	// Schemas
+	if (data.schemas) {
+		for (const schema of data.schemas) {
+			schema.boardId = boardId;
+			if (isNewer) {
+				await db.addSchema(schema);
+			} else {
+				const existing = await db._tx('schemas', 'readonly', s => s.get(schema.id));
+				if (!existing) await db.addSchema(schema);
+			}
+		}
+	}
+
+	// SchemaComponents
+	if (data.schemaComponents) {
+		for (const sc of data.schemaComponents) {
+			// Map the componentTypeId to the newly generated one (if it was created during import)
+			if (sc.componentTypeId && idMap.has(sc.componentTypeId)) {
+				sc.componentTypeId = idMap.get(sc.componentTypeId);
+			}
+
+			if (isNewer) {
+				await db.addSchemaComponent(sc);
+			} else {
+				const existing = await db._tx('schemaComponents', 'readonly', s => s.get(sc.id));
+				if (!existing) await db.addSchemaComponent(sc);
+			}
+		}
+	}
+
 	await loadDeviceBoms();
 }
 
 async function processLegacyImport(b) {
 	if (!currentBomId) return alert("Create/Select a board first.");
-	for(const c of (b.components || b.data)) { c.id = uuid(); c.boardId = currentBomId; await db.addComponent(c); }
+	for (const c of (b.components || b.data)) { c.id = uuid(); c.boardId = currentBomId; await db.addComponent(c); }
 	await loadProjectData();
 }
 
 // Board Export
 async function exportZIP() {
-	if(!window.JSZip) return;
+	if (!window.JSZip) return;
 	const zip = new JSZip();
-	const meta = bomList.find(x=>x.id===currentBomId);
+	const meta = bomList.find(x => x.id === currentBomId);
 	const images = await db.getImages(currentBomId);
 
 	// Fetch and filter Nets
@@ -1086,7 +1313,7 @@ async function exportZIP() {
 	const boardNets = allNets.filter(n => n.projectId === currentBomId);
 
 	const overlapsMap = new Map();
-	for(const img of images) {
+	for (const img of images) {
 		const ovs = await db.getOverlapsForImage(img.id);
 		ovs.forEach(o => overlapsMap.set(o.id, o));
 	}
@@ -1094,6 +1321,13 @@ async function exportZIP() {
 
 	const imgMeta = images.map(i => ({ id: i.id, name: i.name, type: 'image/jpeg' }));
 	const cleanComps = bomData.map(c => { const { boardId, ...rest } = c; return rest; });
+
+	const allSchemas = await db.getSchemas();
+	const boardSchemas = allSchemas.filter(s => s.boardId === currentBomId);
+	const boardSchemaIds = new Set(boardSchemas.map(s => s.id));
+	const allSchemaComps = await db.getSchemaComponents();
+	const boardSchemaComps = allSchemaComps.filter(sc => boardSchemaIds.has(sc.schemaId));
+	const schemaDeps = await gatherSchemaDependencies(boardSchemaComps);
 
 	// 1. Generate README
 	const readmeContent = `PCB ReTrace Data Export
@@ -1115,6 +1349,9 @@ HOW TO USE:
 		images: imgMeta,
 		overlaps: overlaps,
 		nets: boardNets, // Add Nets
+		schemas: boardSchemas,
+		schemaComponents: boardSchemaComps,
+		schemaDependencies: schemaDeps,
 		version: DB_VER,
 		source: "pcb.etaras.com"
 	};
@@ -1138,19 +1375,19 @@ HOW TO USE:
 		imgFolder.file(img.id + ".jpg", blobToSave);
 	}
 
-	zip.generateAsync({type:"blob"}).then(c => dl(c, meta.name + "_Board.zip", "application/zip"));
+	zip.generateAsync({ type: "blob" }).then(c => dl(c, meta.name + "_Board.zip", "application/zip"));
 }
 
 function exportCSV() {
 	const meta = bomList.find(p => p.id === currentBomId);
 	const view = getSortedView();
 	let csv = "Reference,Value,Description\n";
-	view.forEach(r => csv += `${r.label},${r.value},"${(r.desc||'').replace(/"/g,'""')}"\n`);
+	view.forEach(r => csv += `${r.label},${r.value},"${(r.desc || '').replace(/"/g, '""')}"\n`);
 	const blob = new Blob([csv], { type: 'text/csv' });
 	const url = window.URL.createObjectURL(blob);
 	const a = document.createElement('a'); a.href = url; a.download = `${meta.name}_BOM.csv`; document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
-function dl(c,n,t){ const b=(c instanceof Blob)?c:new Blob([c],{type:t}); const u=window.URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=n; document.body.appendChild(a); a.click(); document.body.removeChild(a); }
+function dl(c, n, t) { const b = (c instanceof Blob) ? c : new Blob([c], { type: t }); const u = window.URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = n; document.body.appendChild(a); a.click(); document.body.removeChild(a); }
 
 // --- UI HELPERS ---
 // Global Confirmation Helper (Promise-based)
@@ -1192,21 +1429,66 @@ function switchView(v) {
 	// View Active State
 	const view = document.getElementById(`view-${v}`);
 	if (view) view.classList.add('active');
+	// const schemaDiv = document.getElementById('view-schema');
+	// if (schemaDiv) {
+	//		console.log('[studio] view-schema computed display:',
+	//				window.getComputedStyle(schemaDiv).display,
+	//				'clientWidth:', schemaDiv.clientWidth,
+	//				'clientHeight:', schemaDiv.clientHeight);
+	// }
 
 	// View Specific Initialization
 	if (v === 'map') {
-		if(currentImgId) {
-			if(!document.getElementById('map-content').querySelector('.pcb-image')) showImage(currentImgId);
-			else { setTimeout(() => { if(mapState.scale === 1 && mapState.x === 0 && mapState.y === 0) fitMap(); renderPins(); }, 50); }
+		if (currentImgId) {
+			if (!document.getElementById('map-content').querySelector('.pcb-image')) showImage(currentImgId);
+			else { setTimeout(() => { if (mapState.scale === 1 && mapState.x === 0 && mapState.y === 0) fitMap(); renderPins(); }, 50); }
 		}
 	}
 	else if (v === 'nets') {
-		if(window.netManager) window.netManager.render();
+		if (window.netManager) window.netManager.render();
 	}
 	else if (v === 'inspect') {
-		if(window.inspector) window.inspector.init();
+		if (window.inspector) window.inspector.init();
 	}
-	// 'list' needs no specific init
+	else if (v === 'schema') {
+		const frame = document.getElementById('schema-frame');
+		if (!frame) return;
+		const mc = document.querySelector('.main-content');
+		const msg = {
+			type: 'SCHEMA_INIT',
+			boardId: currentBomId,
+			deviceId: currentDeviceId,
+			width: mc ? mc.clientWidth : window.innerWidth,
+			height: mc ? mc.clientHeight : window.innerHeight
+		};
+		if (!frame._schemaReady) {
+			// First visit — load the page, send message after load
+			// console.log('[studio] setting frame.src, _schemaReady:', frame._schemaReady,
+			//	'boardId:', currentBomId);
+			frame.onload = () => {
+				// console.log('[studio] frame.onload fired, frame clientWidth:', frame.clientWidth,
+				//	'clientHeight:', frame.clientHeight);
+				// console.log('[studio] frame computed style width:',
+				//	window.getComputedStyle(frame).width,
+				//	'height:', window.getComputedStyle(frame).height,
+				//	'display:', window.getComputedStyle(frame).display,
+				//	'position:', window.getComputedStyle(frame).position);
+				frame._schemaReady = true;
+				// console.log('[studio] about to postMessage, contentWindow:',
+				//	!!frame.contentWindow,
+				//	'contentWindow.location:', frame.contentWindow?.location?.href);
+				frame.contentWindow.postMessage(msg, '*');
+			};
+			frame.src = 'schema.html';
+			// console.log('[studio] frame clientWidth:', frame.clientWidth,
+			//	'clientHeight:', frame.clientHeight,
+			//	'offsetWidth:', frame.offsetWidth,
+			//	'offsetHeight:', frame.offsetHeight);
+		} else {
+			// Already loaded — send directly
+			frame.contentWindow.postMessage(msg, '*');
+		}
+	}
 }
 
 function resetStickyEditor() {
@@ -1219,25 +1501,25 @@ function resetStickyEditor() {
 	document.getElementById('inp-img-id').value = '';
 	document.getElementById('new-part-tool-container').innerHTML = '';
 	document.getElementById('inline-thumbs').innerHTML = '';
-	if(spyglass) spyglass.clear();
+	if (spyglass) spyglass.clear();
 }
-function parseLabel(l) { const m=l.toUpperCase().match(/^([A-Z]+)(\d+)(.*)$/); return m?{valid:true,prefix:m[1],num:parseInt(m[2])}:{valid:false}; }
-async function changeSortMode() { sortMode=document.getElementById('sort-select').value; const m=bomList.find(x=>x.id===currentBomId); if(m){ m.sortMode=sortMode; await db.addProject(m); renderList(); } }
+function parseLabel(l) { const m = l.toUpperCase().match(/^([A-Z]+)(\d+)(.*)$/); return m ? { valid: true, prefix: m[1], num: parseInt(m[2]) } : { valid: false }; }
+async function changeSortMode() { sortMode = document.getElementById('sort-select').value; const m = bomList.find(x => x.id === currentBomId); if (m) { m.sortMode = sortMode; await db.addProject(m); renderList(); } }
 function getSortedView() {
 	let view = bomData.map((item, index) => ({ ...item, dataIndex: index }));
 	if (sortMode === 'none') return view;
 	view.sort((a, b) => {
-		const pa=parseLabel(a.label), pb=parseLabel(b.label);
+		const pa = parseLabel(a.label), pb = parseLabel(b.label);
 		if (!pa.valid || !pb.valid) return a.label.localeCompare(b.label);
-		if (sortMode === 'std') return pa.prefix!==pb.prefix ? pa.prefix.localeCompare(pb.prefix) : pa.num-pb.num;
-		return pa.num!==pb.num ? pa.num-pb.num : pa.prefix.localeCompare(pb.prefix);
+		if (sortMode === 'std') return pa.prefix !== pb.prefix ? pa.prefix.localeCompare(pb.prefix) : pa.num - pb.num;
+		return pa.num !== pb.num ? pa.num - pb.num : pa.prefix.localeCompare(pb.prefix);
 	});
 	return view;
 }
 function renderList() {
-	const tb = document.getElementById('bom-body'); tb.innerHTML='';
+	const tb = document.getElementById('bom-body'); tb.innerHTML = '';
 	let view = getSortedView();
-	if(view.length===0) tb.innerHTML=`<tr><td colspan="4" class="empty-state" style="padding:2rem">Empty BOM</td></tr>`;
+	if (view.length === 0) tb.innerHTML = `<tr><td colspan="4" class="empty-state" style="padding:2rem">Empty BOM</td></tr>`;
 	view.forEach(p => {
 		const pinIcon = (p.x !== undefined) ? `<span style="cursor:pointer" onclick="locateComponent('${p.imgId}', ${p.x}, ${p.y}); event.stopPropagation();">🎯</span>` : '';
 		const tr = document.createElement('tr');
@@ -1246,56 +1528,56 @@ function renderList() {
 		tr.dataset.id = p.id;
 
 		tr.onclick = (e) => {
-			 if(e.target.tagName==='BUTTON' || e.target.closest('button')) return;
-			 fillFormFromData(p);
-			 document.querySelectorAll('tbody tr').forEach(x=>x.classList.remove('editing'));
-			 tr.classList.add('editing');
+			if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
+			fillFormFromData(p);
+			document.querySelectorAll('tbody tr').forEach(x => x.classList.remove('editing'));
+			tr.classList.add('editing');
 		};
 		const tools = getToolButtonsHtml(p.label, p.dataIndex);
 		tr.innerHTML = `<td><strong>${pinIcon} ${p.label}</strong></td>
-			<td><div class="val-cell"><span class="val-text">${p.value||'-'}</span><div class="tool-group">${tools}<button class="tool-btn copy-btn" onclick="copyPartToForm(${p.dataIndex})" title="Copy">📄</button></div></div></td>
+			<td><div class="val-cell"><span class="val-text">${p.value || '-'}</span><div class="tool-group">${tools}<button class="tool-btn copy-btn" onclick="copyPartToForm(${p.dataIndex})" title="Copy">📄</button></div></div></td>
 			<td>${p.desc}</td>`;
 		tb.appendChild(tr);
 	});
 	// Check if new connections were made, update overlap cache if so (from modal)
-	if(currentImgId) updateOverlapCache().then(() => {});
+	if (currentImgId) updateOverlapCache().then(() => { });
 }
 function toggleExport(e) { e.stopPropagation(); const el = document.getElementById('export-dropdown'); const isShown = el.style.display === 'block'; document.querySelectorAll('.dropdown-content').forEach(d => d.style.display = 'none'); el.style.display = isShown ? 'none' : 'block'; }
 window.addEventListener('click', () => document.querySelectorAll('.dropdown-content').forEach(d => d.style.display = 'none'));
 async function removePart(idx) {
-	if(await confirmAction("Remove this component?", "Remove")) {
+	if (await confirmAction("Remove this component?", "Remove")) {
 		await db.deleteComponent(bomData[idx].id);
 		await loadProjectData();
 	}
 }
 async function clearCurrentBom() {
-	if(await confirmAction("Clear ALL components from this board?", "Clear All")) {
+	if (await confirmAction("Clear ALL components from this board?", "Clear All")) {
 		await db.clearComponents(currentBomId);
 		await loadProjectData();
 		resetStickyEditor();
 	}
 }
 async function deleteBom() {
-	if(bomList.length < 1) return;
-	if(await confirmAction("Delete this Board and all its content?", "Delete Board")){
+	if (bomList.length < 1) return;
+	if (await confirmAction("Delete this Board and all its content?", "Delete Board")) {
 		await db.deleteProject(currentBomId);
 		history.back();
 		await loadDeviceBoms();
 		resetStickyEditor();
 	}
 }
-function checkToolHint(v) { document.getElementById('new-part-tool-container').innerHTML=getToolButtonsHtml(v,'new'); }
+function checkToolHint(v) { document.getElementById('new-part-tool-container').innerHTML = getToolButtonsHtml(v, 'new'); }
 function getToolButtonsHtml(lbl, idx) {
-	if(!lbl)return ''; const p=lbl.charAt(0).toUpperCase(), ts=TOOL_REGISTRY[p]; if(!ts)return '';
-	const iStr = (idx==='new')?"'new'":idx; let h='';
-	const cnt = ts.length > MAX_DIRECT_TOOLS ? MAX_DIRECT_TOOLS-1 : ts.length;
-	for(let i=0;i<cnt;i++) h+=`<button class="tool-btn" onclick="openToolD(${iStr},'${ts[i].url}','${ts[i].title}')">${ts[i].icon}</button>`;
-	if(ts.length>MAX_DIRECT_TOOLS) h+=`<button class="tool-btn more-btn" onclick="openToolS(${iStr})">•••</button>`;
+	if (!lbl) return ''; const p = lbl.charAt(0).toUpperCase(), ts = TOOL_REGISTRY[p]; if (!ts) return '';
+	const iStr = (idx === 'new') ? "'new'" : idx; let h = '';
+	const cnt = ts.length > MAX_DIRECT_TOOLS ? MAX_DIRECT_TOOLS - 1 : ts.length;
+	for (let i = 0; i < cnt; i++) h += `<button class="tool-btn" onclick="openToolD(${iStr},'${ts[i].url}','${ts[i].title}')">${ts[i].icon}</button>`;
+	if (ts.length > MAX_DIRECT_TOOLS) h += `<button class="tool-btn more-btn" onclick="openToolS(${iStr})">•••</button>`;
 	return `<div class="tool-group">${h}</div>`;
 }
 
 // --- TOOLS ---
-const modal=document.getElementById('tool-modal'), iframe=document.getElementById('tool-frame'), toolTitle=document.getElementById('tool-title');
+const modal = document.getElementById('tool-modal'), iframe = document.getElementById('tool-frame'), toolTitle = document.getElementById('tool-title');
 
 async function openToolD(idx, url, tit) {
 	editingIndex = idx;
@@ -1340,7 +1622,7 @@ async function openToolD(idx, url, tit) {
 					const pt = cvManager.projectPoint(srcX, srcY, pData.H);
 					if (pt) {
 						const targetRec = await db.getImage(pData.id);
-						if(targetRec) {
+						if (targetRec) {
 							const tBmp = await createImageBitmap(targetRec.blob);
 							if (pt.x > 0 && pt.y > 0 && pt.x < tBmp.width && pt.y < tBmp.height) {
 								views.push({ name: targetRec.name, bitmap: tBmp, x: pt.x, y: pt.y, isMain: false, imgId: pData.id });
@@ -1370,7 +1652,7 @@ async function openToolD(idx, url, tit) {
 	if (iframe.contentWindow && iframe.contentWindow.location) {
 		try {
 			iframe.contentWindow.location.replace(finalUrl);
-		} catch(e) {
+		} catch (e) {
 			// Fallback for first load or cross-origin issues (though local)
 			iframe.src = finalUrl;
 		}
@@ -1380,16 +1662,16 @@ async function openToolD(idx, url, tit) {
 }
 
 function openToolS(idx) {
-	editingIndex=idx; const lbl=(idx==='new')?document.getElementById('inp-label').value:bomData[idx].label; const ts=TOOL_REGISTRY[lbl.charAt(0).toUpperCase()];
-	toolTitle.innerText="Select Tool"; iframe.style.display='none'; document.getElementById('tool-selector').style.display='flex'; modal.style.display='flex';
-	const g=document.getElementById('selector-grid'); g.innerHTML='';
-	ts.forEach(t=>{ const c=document.createElement('div'); c.className='tool-card'; c.innerHTML=`<div class="tool-card-icon">${t.icon}</div><div class="tool-card-title">${t.title}</div>`; c.onclick=()=>openToolD(idx,t.url,t.title); g.appendChild(c); });
+	editingIndex = idx; const lbl = (idx === 'new') ? document.getElementById('inp-label').value : bomData[idx].label; const ts = TOOL_REGISTRY[lbl.charAt(0).toUpperCase()];
+	toolTitle.innerText = "Select Tool"; iframe.style.display = 'none'; document.getElementById('tool-selector').style.display = 'flex'; modal.style.display = 'flex';
+	const g = document.getElementById('selector-grid'); g.innerHTML = '';
+	ts.forEach(t => { const c = document.createElement('div'); c.className = 'tool-card'; c.innerHTML = `<div class="tool-card-icon">${t.icon}</div><div class="tool-card-title">${t.title}</div>`; c.onclick = () => openToolD(idx, t.url, t.title); g.appendChild(c); });
 }
-function closeTool(){ modal.style.display='none'; iframe.src=''; }
-window.addEventListener('message', async e=>{
-	if(e.data.type==='COMPONENT_UPDATE') {
-		if(editingIndex==='new') { document.getElementById('inp-value').value=e.data.value; if(e.data.description)document.getElementById('inp-desc').value=e.data.description; }
-		else { const c=bomData[editingIndex]; c.value=e.data.value; if(e.data.description)c.desc=e.data.description; await db.addComponent(c); await loadProjectData(); }
+function closeTool() { modal.style.display = 'none'; iframe.src = ''; }
+window.addEventListener('message', async e => {
+	if (e.data.type === 'COMPONENT_UPDATE') {
+		if (editingIndex === 'new') { document.getElementById('inp-value').value = e.data.value; if (e.data.description) document.getElementById('inp-desc').value = e.data.description; }
+		else { const c = bomData[editingIndex]; c.value = e.data.value; if (e.data.description) c.desc = e.data.description; await db.addComponent(c); await loadProjectData(); }
 		closeTool();
 	}
 	// 2. Handle Promotion (Swap Source Image)
@@ -1415,35 +1697,41 @@ window.addEventListener('message', async e=>{
 			// Note: We don't reloadProjectData() here to keep the UI smooth while dragging
 		}
 	}
+
+	else if (e.data?.type === 'SCHEMA_READY') {
+		const frame = document.getElementById('schema-frame');
+		if (frame) clearInterval(frame._schemaTimer);
+	}
+
 });
 
 // --- SPYGLASS & MAP (ENHANCED) ---
 async function showImage(id) {
 	currentImgId = id;
 	const imgSel = document.getElementById('image-select');
-	if(imgSel && imgSel.value !== id) imgSel.value = id;
+	if (imgSel && imgSel.value !== id) imgSel.value = id;
 	const imgObj = bomImages.find(i => i.id === id);
-	if(!imgObj) return;
+	if (!imgObj) return;
 	const url = URL.createObjectURL(imgObj.blob);
 	const currentImg = document.getElementById('map-content').querySelector('.pcb-image');
-	if(!currentImg || currentImg.dataset.id !== id) {
-		 document.getElementById('map-content').innerHTML = `<img src="${url}" data-id="${id}" class="pcb-image">`;
-		 const newImg = document.getElementById('map-content').querySelector('.pcb-image');
-		 newImg.onload = () => fitMap();
+	if (!currentImg || currentImg.dataset.id !== id) {
+		document.getElementById('map-content').innerHTML = `<img src="${url}" data-id="${id}" class="pcb-image">`;
+		const newImg = document.getElementById('map-content').querySelector('.pcb-image');
+		newImg.onload = () => fitMap();
 	}
 	await updateOverlapCache(); // LOAD OVERLAPS
 	renderPins();
 }
 function fitMap() {
-	if(skipNextFit) { skipNextFit = false; return; }
+	if (skipNextFit) { skipNextFit = false; return; }
 	const img = document.getElementById('map-content').querySelector('.pcb-image');
-	if(!img) return;
-	if(img.naturalWidth === 0) { img.onload = () => fitMap(); return; }
+	if (!img) return;
+	if (img.naturalWidth === 0) { img.onload = () => fitMap(); return; }
 	const viewport = document.getElementById('map-viewport');
 	const vw = viewport.clientWidth; const vh = viewport.clientHeight;
 	if (vw === 0 || vh === 0) return;
-	const scale = Math.min(vw/img.naturalWidth, vh/img.naturalHeight);
-	mapState = { scale: scale, x: (vw - img.naturalWidth*scale)/2, y: (vh - img.naturalHeight*scale)/2, isDragging: false };
+	const scale = Math.min(vw / img.naturalWidth, vh / img.naturalHeight);
+	mapState = { scale: scale, x: (vw - img.naturalWidth * scale) / 2, y: (vh - img.naturalHeight * scale) / 2, isDragging: false };
 	updateTransform();
 }
 function switchImage() { showImage(document.getElementById('image-select').value); setTimeout(fitMap, 50); }
@@ -1469,7 +1757,7 @@ async function locateComponent(imgId, x, y) {
 		scale: targetScale,
 		x: (vw / 2) - (x * targetScale),
 		y: (vh / 2) - (y * targetScale),
-		isDragging: false, startX:0, startY:0
+		isDragging: false, startX: 0, startY: 0
 	};
 
 	updateTransform();
@@ -1491,7 +1779,7 @@ async function saveProcessedImageToDB(blob, name) {
 		await loadProjectData();
 
 		const imgSelect = document.getElementById('image-select');
-		if(imgSelect) { imgSelect.value = id; switchImage(); }
+		if (imgSelect) { imgSelect.value = id; switchImage(); }
 		switchView('map');
 
 		await autoStitchNewImage(id);
@@ -1506,10 +1794,10 @@ async function saveProcessedImageToDB(blob, name) {
 window.saveProcessedImageToDB = saveProcessedImageToDB;
 
 async function uploadImage(input) {
-	const file = input.files[0]; if(!file) return;
+	const file = input.files[0]; if (!file) return;
 	const name = await requestInput("Upload Image", "Image Name", file.name);
 
-	if(!name) return;
+	if (!name) return;
 
 	const id = uuid(); // Capture ID to use later
 	await db.addImage({ id: id, boardId: currentBomId, blob: file, name: name });
@@ -1522,10 +1810,10 @@ async function uploadImage(input) {
 
 // Open the Image Settings Modal
 function openImageSettings() {
-	if(!currentImgId) return alert("No image selected");
+	if (!currentImgId) return alert("No image selected");
 
 	const img = bomImages.find(i => i.id === currentImgId);
-	if(!img) return;
+	if (!img) return;
 
 	document.getElementById('edit-image-name').value = img.name;
 	document.getElementById('image-settings-modal').style.display = 'flex';
@@ -1533,26 +1821,26 @@ function openImageSettings() {
 
 // Save Rename Changes
 async function saveImageSettings() {
-	if(!currentImgId) return;
+	if (!currentImgId) return;
 
 	const newName = document.getElementById('edit-image-name').value.trim();
-	if(!newName) return alert("Name cannot be empty");
+	if (!newName) return alert("Name cannot be empty");
 
 	const img = bomImages.find(i => i.id === currentImgId);
 
 	// Only update DB if changed
-	if(img.name !== newName) {
+	if (img.name !== newName) {
 		img.name = newName;
 		await db.addImage(img); // Upsert to DB
 
 		// Update UI Dropdown immediately without full reload
 		const sel = document.getElementById('image-select');
 		const opt = sel.querySelector(`option[value="${currentImgId}"]`);
-		if(opt) opt.innerText = newName;
+		if (opt) opt.innerText = newName;
 
 		// Update connections modal source name if it's open or cached
 		const connName = document.getElementById('conn-src-name');
-		if(connName) connName.innerText = newName;
+		if (connName) connName.innerText = newName;
 	}
 
 	history.back();
@@ -1560,7 +1848,7 @@ async function saveImageSettings() {
 
 // Delete Image (Close modal on success)
 async function deleteCurrentImage() {
-	if(!currentImgId) return;
+	if (!currentImgId) return;
 
 	const usageCount = bomData.filter(c => c.imgId === currentImgId).length;
 	if (usageCount > 0) {
@@ -1569,7 +1857,7 @@ async function deleteCurrentImage() {
 	}
 
 	// Note: confirmAction uses z-index 1100, so it appears over settings
-	if(await confirmAction("Delete current image?", "Delete Image")) {
+	if (await confirmAction("Delete current image?", "Delete Image")) {
 		await db.deleteImage(currentImgId);
 
 		// Remove from UI arrays
@@ -1625,7 +1913,7 @@ function renderPins() {
 				const H = isForward ? ov.homography : ov.inverseHomography;
 				const proj = cvManager.projectPoint(c.x, c.y, H);
 				if (proj && proj.x > 0 && proj.y > 0) {
-					 x = proj.x; y = proj.y; isInferred = true;
+					x = proj.x; y = proj.y; isInferred = true;
 				}
 			}
 		}
@@ -1665,7 +1953,7 @@ let evCache = [];
 let prevDiff = -1;
 
 function pointerDownHandler(e) {
-	if(e.target.closest('.pin-marker')) return;
+	if (e.target.closest('.pin-marker')) return;
 
 	evCache.push(e);
 
@@ -1694,7 +1982,7 @@ function pointerDownHandler(e) {
 function pointerMoveHandler(e) {
 	// Update event in cache (for Pinch calc)
 	const index = evCache.findIndex(cached => cached.pointerId === e.pointerId);
-	if(index > -1) evCache[index] = e;
+	if (index > -1) evCache[index] = e;
 
 	// A. PINCH ZOOM (Mobile)
 	if (evCache.length === 2) {
@@ -1723,11 +2011,11 @@ function pointerMoveHandler(e) {
 	}
 
 	// B. PANNING (Desktop + Mobile)
-	if(!mapState.isDragging) return;
+	if (!mapState.isDragging) return;
 
 	// e.preventDefault() helps stop scrolling on mobile,
 	// but we check pointerType to avoid selecting text issues on desktop
-	if(e.pointerType === 'touch') e.preventDefault();
+	if (e.pointerType === 'touch') e.preventDefault();
 
 	mapState.x = e.clientX - mapState.startX;
 	mapState.y = e.clientY - mapState.startY;
@@ -1736,7 +2024,7 @@ function pointerMoveHandler(e) {
 
 function pointerUpHandler(e) {
 	const index = evCache.findIndex(cached => cached.pointerId === e.pointerId);
-	if(index > -1) evCache.splice(index, 1);
+	if (index > -1) evCache.splice(index, 1);
 
 	if (evCache.length < 2) prevDiff = -1;
 
@@ -1754,9 +2042,9 @@ viewport.addEventListener('pointerdown', pointerDownHandler);
 // Click Logic (Distinguishes Drag vs Click)
 viewport.addEventListener('click', e => {
 	const dist = Math.hypot(e.clientX - mapState.rawStartX, e.clientY - mapState.rawStartY);
-	if(dist > 10) return; // Ignore if dragged
+	if (dist > 10) return; // Ignore if dragged
 
-	if(mapState.isDragging || !currentImgId || e.target.closest('.pin-marker')) return;
+	if (mapState.isDragging || !currentImgId || e.target.closest('.pin-marker')) return;
 
 	const r = document.getElementById('map-content').getBoundingClientRect();
 	const x = (e.clientX - r.left) / mapState.scale;
@@ -1787,7 +2075,7 @@ viewport.addEventListener('click', e => {
 async function editCompFromMap(id, e) {
 	e.stopPropagation();
 	const comp = bomData.find(c => c.id === id);
-	if(!comp) return;
+	if (!comp) return;
 	fillFormFromData(comp);
 	returnToMap = true;
 	switchView('list');
@@ -1795,7 +2083,7 @@ async function editCompFromMap(id, e) {
 	// [NEW] Synchronize List Selection
 	setTimeout(() => {
 		const row = document.querySelector(`#bom-body tr[data-id="${id}"]`);
-		if(row) {
+		if (row) {
 			// Clear existing
 			document.querySelectorAll('tbody tr').forEach(x => x.classList.remove('editing'));
 			// Highlight new
@@ -1822,16 +2110,16 @@ async function fillFormFromData(c) {
 
 	// 2. Clear previous thumbnails
 	const thumbBox = document.getElementById('inline-thumbs');
-	if(thumbBox) thumbBox.innerHTML = '';
+	if (thumbBox) thumbBox.innerHTML = '';
 
 	// --- HELPER: Set Spyglass Target ---
 	const setMainView = (imgRecOrSource, x, y) => {
-		if(!spyglass) return;
-		if(imgRecOrSource instanceof HTMLElement || imgRecOrSource instanceof ImageBitmap) {
+		if (!spyglass) return;
+		if (imgRecOrSource instanceof HTMLElement || imgRecOrSource instanceof ImageBitmap) {
 			spyglass.setTarget(imgRecOrSource, x, y, false);
 			return;
 		}
-		if(imgRecOrSource && imgRecOrSource.blob) {
+		if (imgRecOrSource && imgRecOrSource.blob) {
 			createImageBitmap(imgRecOrSource.blob).then(bmp => {
 				spyglass.setTarget(bmp, x, y, true);
 			});
@@ -1842,7 +2130,7 @@ async function fillFormFromData(c) {
 	const createThumb = (imgRec, tx, ty, isMain) => {
 		const thumb = document.createElement('div');
 		thumb.style.cssText = "width:60px; height:60px; border:1px solid #cbd5e1; flex-shrink:0; cursor:pointer; position:relative; background:#eee; display:flex; align-items:center; justify-content:center;";
-		if(isMain) thumb.style.borderColor = "#2563eb";
+		if (isMain) thumb.style.borderColor = "#2563eb";
 
 		// Loader placeholder
 		thumb.innerHTML = '<span style="font-size:10px; color:#999;">...</span>';
@@ -1859,7 +2147,7 @@ async function fillFormFromData(c) {
 				const cvs = document.createElement('canvas');
 				cvs.width = 60; cvs.height = 60;
 				const ctx = cvs.getContext('2d');
-				ctx.drawImage(bmp, tx-50, ty-50, 100, 100, 0, 0, 60, 60);
+				ctx.drawImage(bmp, tx - 50, ty - 50, 100, 100, 0, 0, 60, 60);
 				thumb.appendChild(cvs);
 				thumb.title = isMain ? "Main View" : `View on ${imgRec.name}`;
 
@@ -1892,7 +2180,7 @@ async function fillFormFromData(c) {
 						c.imgId = imgRec.id; c.x = tx; c.y = ty;
 
 						// Update DB if exists
-						if(c.id) { await db.addComponent(c); await loadProjectData(); }
+						if (c.id) { await db.addComponent(c); await loadProjectData(); }
 
 						// Refresh UI
 						fillFormFromData(c);
@@ -1908,7 +2196,7 @@ async function fillFormFromData(c) {
 					setMainView(imgRec, tx, ty);
 				};
 
-			} catch(e) {
+			} catch (e) {
 				console.error("Thumb error", e);
 				thumb.innerHTML = '<span style="color:red">x</span>';
 			}
@@ -1918,14 +2206,14 @@ async function fillFormFromData(c) {
 	// 3. Calculate Views
 	const viewsToRender = [];
 	let mainImgRec = null;
-	if((c.x !== undefined) && (c.y !== undefined) && c.imgId) {
+	if ((c.x !== undefined) && (c.y !== undefined) && c.imgId) {
 		mainImgRec = bomImages.find(i => i.id === c.imgId);
-		if(mainImgRec) {
+		if (mainImgRec) {
 			viewsToRender.push({ rec: mainImgRec, x: c.x, y: c.y, isMain: true });
 
 			// Initial Load: Check if Map is already showing this
 			const mapImg = document.getElementById('map-content') ? document.getElementById('map-content').querySelector('.pcb-image') : null;
-			if(mapImg && mapImg.dataset.id === c.imgId && mapImg.complete && mapImg.naturalWidth > 0 && spyglass) {
+			if (mapImg && mapImg.dataset.id === c.imgId && mapImg.complete && mapImg.naturalWidth > 0 && spyglass) {
 				spyglass.setTarget(mapImg, c.x, c.y, false);
 			} else {
 				setMainView(mainImgRec, c.x, c.y);
@@ -1960,12 +2248,12 @@ function copyPartToForm(idx) { const c = bomData[idx]; document.getElementById('
 // --- CONNECTIONS UI ---
 //	Delete connection function
 async function deleteConnection(targetId) {
-	if(!currentImgId || !targetId) return;
+	if (!currentImgId || !targetId) return;
 
 	const targetImg = bomImages.find(i => i.id === targetId);
 	const name = targetImg ? targetImg.name : "this image";
 
-	if(await confirmAction(`Remove stitching connection with ${name}?`, "Remove Stitch")) {
+	if (await confirmAction(`Remove stitching connection with ${name}?`, "Remove Stitch")) {
 		await db.deleteOverlapsForPair(currentImgId, targetId);
 		await renderConnectionsList();
 		await updateOverlapCache();
@@ -1975,15 +2263,15 @@ async function deleteConnection(targetId) {
 
 // Note: Ensure this function is called by openConnectionsModal() in your existing code
 async function renderConnectionsList() {
-	if(!currentImgId) return;
+	if (!currentImgId) return;
 	const curImg = bomImages.find(i => i.id === currentImgId);
-	if(!curImg) return;
+	if (!curImg) return;
 
 	const title = document.getElementById('conn-src-name');
-	if(title) title.innerText = curImg.name;
+	if (title) title.innerText = curImg.name;
 
 	const list = document.getElementById('conn-list');
-	if(!list) return;
+	if (!list) return;
 
 	list.innerHTML = '<div style="text-align:center;color:#888">Loading...</div>';
 
@@ -1991,7 +2279,7 @@ async function renderConnectionsList() {
 	const others = bomImages.filter(i => i.id !== currentImgId);
 
 	list.innerHTML = '';
-	if(others.length === 0) {
+	if (others.length === 0) {
 		list.innerHTML = '<div style="padding:1rem; text-align:center; background:#eee; border-radius:4px;">No other images to stitch with.</div>';
 		return;
 	}
@@ -2003,8 +2291,8 @@ async function renderConnectionsList() {
 		let statusBadge = `<span style="font-size:0.75rem; background:#f1f5f9; color:#94a3b8; padding:2px 6px; border-radius:4px;">Not Connected</span>`;
 		let actions = `<button class="secondary sm-btn" onclick="launchStitch('${img.id}')">Edit Stitch</button>`;
 
-		if(ov) {
-			if(ov.isManual) statusBadge = `<span style="font-size:0.75rem; background:#dcfce7; color:#166534; padding:2px 6px; border-radius:4px;">Manual (${ov.matchCount} pts)</span>`;
+		if (ov) {
+			if (ov.isManual) statusBadge = `<span style="font-size:0.75rem; background:#dcfce7; color:#166534; padding:2px 6px; border-radius:4px;">Manual (${ov.matchCount} pts)</span>`;
 			else statusBadge = `<span style="font-size:0.75rem; background:#e0f2fe; color:#0369a1; padding:2px 6px; border-radius:4px;">Auto-CV</span>`;
 
 			// Show Delete + Edit buttons
@@ -2021,24 +2309,24 @@ async function renderConnectionsList() {
 
 // Uses the helper above
 async function openConnectionsModal() {
-	if(!currentImgId) return alert("Select an image first.");
+	if (!currentImgId) return alert("Select an image first.");
 	document.getElementById('connections-modal').style.display = 'flex';
 	await renderConnectionsList();
 }
 
 function launchStitch(targetId) {
 	document.getElementById('connections-modal').style.display = 'none';
-	if(stitchEditor) stitchEditor.open(currentImgId, targetId);
+	if (stitchEditor) stitchEditor.open(currentImgId, targetId);
 	else alert("Editor not initialized.");
 }
 
 async function runAutoCVBatch() {
-	if(!cvManager || !cvManager.ready) { cvManager.init(); return alert("CV initializing... wait."); }
-	if(!await confirmAction("Run Auto-CV on all unmatched images?", "Run Auto-CV")) return;
+	if (!cvManager || !cvManager.ready) { cvManager.init(); return alert("CV initializing... wait."); }
+	if (!await confirmAction("Run Auto-CV on all unmatched images?", "Run Auto-CV")) return;
 
 	// Capture ID locally to prevent errors if user switches image during processing
 	const sourceId = currentImgId;
-	if(!sourceId) return;
+	if (!sourceId) return;
 
 	document.getElementById('conn-list').innerHTML = '<div style="text-align:center; padding:2rem;">Processing...</div>';
 
@@ -2046,9 +2334,9 @@ async function runAutoCVBatch() {
 	const others = bomImages.filter(i => i.id !== sourceId);
 	const sourceBlob = bomImages.find(i => i.id === sourceId).blob;
 
-	for(const other of others) {
+	for (const other of others) {
 		const existing = await db.getOverlapsForPair(sourceId, other.id);
-		if(existing && existing.isManual) continue;
+		if (existing && existing.isManual) continue;
 
 		const blob1 = sourceBlob;
 		const blob2 = other.blob;
@@ -2056,9 +2344,9 @@ async function runAutoCVBatch() {
 		const f1 = await cvManager.feats(blob1);
 		const f2 = await cvManager.feats(blob2);
 
-		if(f1 && f2) {
+		if (f1 && f2) {
 			const res = cvManager.findH(f1, f2);
-			if(res) {
+			if (res) {
 				await db.deleteOverlapsForPair(sourceId, other.id);
 				await db.addOverlap({
 					id: uuid(),
@@ -2071,8 +2359,8 @@ async function runAutoCVBatch() {
 				});
 			}
 		}
-		if(f1) { f1.kp.delete(); f1.des.delete(); }
-		if(f2) { f2.kp.delete(); f2.des.delete(); }
+		if (f1) { f1.kp.delete(); f1.des.delete(); }
+		if (f2) { f2.kp.delete(); f2.des.delete(); }
 	}
 	await renderConnectionsList();
 	updateOverlapCache().then(renderPins);
@@ -2081,7 +2369,7 @@ async function runAutoCVBatch() {
 // UI Helper: Shows a global blocking overlay with a message
 function showBusy(msg) {
 	let el = document.getElementById('busy-indicator');
-	if(!el) {
+	if (!el) {
 		el = document.createElement('div');
 		el.id = 'busy-indicator';
 		el.style.cssText = "position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:rgba(0,0,0,0.8); color:white; padding:20px; border-radius:8px; z-index:9999; font-weight:bold; display:flex; align-items:center; gap:10px; box-shadow: 0 4px 15px rgba(0,0,0,0.3);";
@@ -2093,46 +2381,46 @@ function showBusy(msg) {
 
 function hideBusy() {
 	const el = document.getElementById('busy-indicator');
-	if(el) el.style.display = 'none';
+	if (el) el.style.display = 'none';
 }
 
 // Logic: Auto-stitch specific image against all others on the board
 async function autoStitchNewImage(newId) {
-	if(!cvManager) cvManager = new CVManager();
-	if(!cvManager.ready) {
+	if (!cvManager) cvManager = new CVManager();
+	if (!cvManager.ready) {
 		showBusy("Initializing Computer Vision...");
 		await cvManager.init();
 	}
 
 	// Find the newly added image object
 	const newImg = bomImages.find(i => i.id === newId);
-	if(!newImg) return;
+	if (!newImg) return;
 
 	// Filter existing images (exclude the new one)
 	const others = bomImages.filter(i => i.id !== newId);
-	if(others.length === 0) return;
+	if (others.length === 0) return;
 
 	try {
 		showBusy("Extracting features from new image...");
 
 		// 1. Compute features for the NEW image ONCE
 		const fNew = await cvManager.feats(newImg.blob);
-		if(!fNew) { hideBusy(); return; }
+		if (!fNew) { hideBusy(); return; }
 
 		let matchesFound = 0;
 
 		// 2. Compare against all others
-		for(let i=0; i<others.length; i++) {
+		for (let i = 0; i < others.length; i++) {
 			const other = others[i];
-			showBusy(`Stitching vs ${other.name}... (${i+1}/${others.length})`);
+			showBusy(`Stitching vs ${other.name}... (${i + 1}/${others.length})`);
 
 			// Tiny pause to let UI render the text update
 			await new Promise(r => setTimeout(r, 10));
 
 			const fOther = await cvManager.feats(other.blob);
-			if(fOther) {
+			if (fOther) {
 				const res = cvManager.findH(fNew, fOther);
-				if(res) {
+				if (res) {
 					await db.addOverlap({
 						id: uuid(),
 						fromImageId: newId,
@@ -2145,21 +2433,21 @@ async function autoStitchNewImage(newId) {
 					matchesFound++;
 				}
 				// Free memory for the 'other' image immediately
-				if(fOther.kp) fOther.kp.delete();
-				if(fOther.des) fOther.des.delete();
+				if (fOther.kp) fOther.kp.delete();
+				if (fOther.des) fOther.des.delete();
 			}
 		}
 
 		// Free memory for the 'new' image
-		if(fNew.kp) fNew.kp.delete();
-		if(fNew.des) fNew.des.delete();
+		if (fNew.kp) fNew.kp.delete();
+		if (fNew.des) fNew.des.delete();
 
-	} catch(e) {
+	} catch (e) {
 		console.error("Auto-stitch failed", e);
 	} finally {
 		hideBusy();
 		// Refresh overlaps if we successfully matched anything
-		if(await db.getOverlapsForImage(newId).length > 0) {
+		if (await db.getOverlapsForImage(newId).length > 0) {
 			await updateOverlapCache();
 			renderPins();
 		}
@@ -2171,8 +2459,8 @@ const ImageGraph = {
 	invertH(m) {
 		if (!m || m.length !== 9) return null;
 		const det = m[0] * (m[4] * m[8] - m[7] * m[5]) -
-					m[1] * (m[3] * m[8] - m[5] * m[6]) +
-					m[2] * (m[3] * m[7] - m[4] * m[6]);
+			m[1] * (m[3] * m[8] - m[5] * m[6]) +
+			m[2] * (m[3] * m[7] - m[4] * m[6]);
 		if (Math.abs(det) < 1e-10) return null;
 		const invDet = 1 / det;
 		return [
@@ -2195,25 +2483,25 @@ const ImageGraph = {
 		// 1. Build Adjacency List
 		const graph = {};
 		allOverlaps.forEach(ov => {
-			if(!graph[ov.fromImageId]) graph[ov.fromImageId] = [];
+			if (!graph[ov.fromImageId]) graph[ov.fromImageId] = [];
 			// Forward: Source -> Target (Homography)
 			graph[ov.fromImageId].push({ id: ov.toImageId, H: ov.homography, cost: ov.isManual ? 1 : 1000 });
 
-			if(!graph[ov.toImageId]) graph[ov.toImageId] = [];
+			if (!graph[ov.toImageId]) graph[ov.toImageId] = [];
 			// Backward: Target -> Source (Inverse)
 			graph[ov.toImageId].push({ id: ov.fromImageId, H: ov.inverseHomography, cost: ov.isManual ? 1 : 1000 });
 		});
 
 		// 2. Dijkstra Search
 		const results = [];
-		const queue = [{ id: startImgId, H: [1,0,0, 0,1,0, 0,0,1], totalCost: 0 }];
+		const queue = [{ id: startImgId, H: [1, 0, 0, 0, 1, 0, 0, 0, 1], totalCost: 0 }];
 		const visited = new Set();
 
-		while(queue.length > 0) {
+		while (queue.length > 0) {
 			queue.sort((a, b) => a.totalCost - b.totalCost);
 			const curr = queue.shift();
 
-			if(visited.has(curr.id)) continue;
+			if (visited.has(curr.id)) continue;
 			visited.add(curr.id);
 
 			// Add to results (excluding start node)
@@ -2221,9 +2509,9 @@ const ImageGraph = {
 				results.push({ id: curr.id, H: curr.H, totalCost: curr.totalCost });
 			}
 
-			if(graph[curr.id]) {
-				for(const edge of graph[curr.id]) {
-					if(!visited.has(edge.id)) {
+			if (graph[curr.id]) {
+				for (const edge of graph[curr.id]) {
+					if (!visited.has(edge.id)) {
 						const H_next = cvMgr.multiplyH(edge.H, curr.H);
 						queue.push({
 							id: edge.id,
@@ -2256,7 +2544,7 @@ const NavManager = {
 		window.addEventListener('message', (e) => {
 			if (e.data.type === 'ESC_PRESSED') {
 				const visible = Array.from(document.querySelectorAll('.modal-overlay')).some(m => m.style.display === 'flex');
-				if(visible) history.back();
+				if (visible) history.back();
 			}
 		});
 
@@ -2268,8 +2556,8 @@ const NavManager = {
 		});
 
 		const mm = document.getElementById('mobile-menu-modal');
-		if(mm) {
-			mm.onclick = (e) => { if(e.target === mm) history.back(); };
+		if (mm) {
+			mm.onclick = (e) => { if (e.target === mm) history.back(); };
 		}
 
 		this.applyPatches();
@@ -2287,8 +2575,8 @@ const NavManager = {
 
 		// 1. Close Modals
 		document.querySelectorAll('.modal-overlay').forEach(el => el.style.display = 'none');
-		if(typeof ImageImporter !== 'undefined') ImageImporter.close(true);
-		if(typeof iframe !== 'undefined') { iframe.style.display = 'none'; iframe.src = 'about:blank'; }
+		if (typeof ImageImporter !== 'undefined') ImageImporter.close(true);
+		if (typeof iframe !== 'undefined') { iframe.style.display = 'none'; iframe.src = 'about:blank'; }
 
 		// 2. Restore View
 		if (ctx === 'map') {
@@ -2307,7 +2595,7 @@ const NavManager = {
 			// Restore Modals
 			if (ctx && ctx.endsWith('-modal')) {
 				const el = document.getElementById(ctx);
-				if(el) el.style.display = 'flex';
+				if (el) el.style.display = 'flex';
 			}
 		}
 	},
@@ -2332,7 +2620,7 @@ const NavManager = {
 	applyPatches() {
 		const originalSwitchView = switchView;
 		// Wrap switchView to handle history pushing automatically
-		switchView = function(v, fromHistory = false) {
+		switchView = function (v, fromHistory = false) {
 			originalSwitchView(v);
 			if (!fromHistory) {
 				NavManager.pushState(v);
@@ -2340,21 +2628,21 @@ const NavManager = {
 		};
 
 		const originalOpenToolD = openToolD;
-		openToolD = async function(idx, url, tit) {
+		openToolD = async function (idx, url, tit) {
 			await originalOpenToolD(idx, url, tit);
 			NavManager.pushState('tool');
 		};
 
 		const originalCloseTool = closeTool;
-		closeTool = function() {
-			if(history.state && history.state.context === 'tool') history.back();
+		closeTool = function () {
+			if (history.state && history.state.context === 'tool') history.back();
 			else originalCloseTool();
 		};
 
 		const wrapModalOpener = (fnName, modalId) => {
 			if (typeof window[fnName] === 'function') {
 				const original = window[fnName];
-				window[fnName] = function(...args) {
+				window[fnName] = function (...args) {
 					original.apply(this, args);
 					NavManager.pushState(modalId);
 				};
@@ -2367,28 +2655,28 @@ const NavManager = {
 		wrapModalOpener('openImageSettings', 'image-settings-modal');
 		wrapModalOpener('openMobileMenu', 'mobile-menu-modal');
 
-		if(typeof stitchEditor !== 'undefined' && stitchEditor) {
+		if (typeof stitchEditor !== 'undefined' && stitchEditor) {
 			const origStitchOpen = stitchEditor.open.bind(stitchEditor);
-			stitchEditor.open = async function(src, dst) {
+			stitchEditor.open = async function (src, dst) {
 				await origStitchOpen(src, dst);
 				NavManager.pushState('stitch-modal');
 			};
 		}
 
-		if(typeof ImageImporter !== 'undefined') {
+		if (typeof ImageImporter !== 'undefined') {
 			const origImgOpen = ImageImporter.openModal.bind(ImageImporter);
-			ImageImporter.openModal = function(mode) {
+			ImageImporter.openModal = function (mode) {
 				origImgOpen(mode);
-				if(!history.state || history.state.context !== 'import-modal') {
-					 NavManager.pushState('import-modal');
+				if (!history.state || history.state.context !== 'import-modal') {
+					NavManager.pushState('import-modal');
 				}
 			};
-			ImageImporter.close = function(silent = false) {
+			ImageImporter.close = function (silent = false) {
 				this.modal.style.display = 'none';
 				this.stopStream();
 				this.sourceImage = null;
 				this.cropRect = null;
-				if(!silent && history.state && history.state.context === 'import-modal') {
+				if (!silent && history.state && history.state.context === 'import-modal') {
 					history.back();
 				}
 			};
@@ -2426,7 +2714,7 @@ function requestInput(title, label, val, opts = {}) {
 				e.stopPropagation();
 				const isHidden = helpContent.style.display === 'none';
 				helpContent.style.display = isHidden ? 'block' : 'none';
-				if(isHidden) inp.focus(); // Keep focus
+				if (isHidden) inp.focus(); // Keep focus
 			};
 		} else {
 			helpToggle.style.display = 'none';
@@ -2475,7 +2763,7 @@ function requestInput(title, label, val, opts = {}) {
 		newOk.onclick = (e) => { e.stopPropagation(); commit(inp.value.trim()); };
 		newCancel.onclick = (e) => { e.stopPropagation(); commit(null); };
 
-		if(opts.extraBtn) {
+		if (opts.extraBtn) {
 			newExtra.style.display = 'block';
 			newExtra.innerText = opts.extraBtn.label;
 			newExtra.className = opts.extraBtn.class || 'danger';
@@ -2487,7 +2775,7 @@ function requestInput(title, label, val, opts = {}) {
 		modal.querySelector('.close-btn').onclick = (e) => { e.stopPropagation(); commit(null); };
 
 		inp.onkeydown = (e) => {
-			if(e.key === 'Enter') {
+			if (e.key === 'Enter') {
 				e.preventDefault();
 				newOk.click();
 			}
@@ -2565,13 +2853,23 @@ async function processUrlImport(url) {
 	}
 }
 
+new ResizeObserver(() => {
+	const frame = document.getElementById('schema-frame');
+	const mc = document.querySelector('.main-content');
+	if (frame?._schemaReady && frame.contentWindow && mc) {
+		frame.contentWindow.postMessage({ type: 'SCHEMA_RESIZE' }, '*');
+	}
+}).observe(document.querySelector('.main-content'));
+
 // Start
 window.onload = init;
 
 window.exportKiCad = () => {
 	if (window.netManager) window.netManager.exportKiCad();
 };
-
+window.exportSpice = () => {
+	if (window.netManager) window.netManager.exportSpice();
+};
 window.startNewNet = () => {
 	if (window.inspector) window.inspector.startNewNet();
 };

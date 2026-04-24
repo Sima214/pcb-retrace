@@ -16,6 +16,7 @@
 	<script src="spyglass.js"></script>
 
 	<!-- CORE LOGIC -->
+	<script src="db-core.js"></script>
 	<script src="cv-core.js"></script>
 	<script src="stitch-editor.js"></script>
 	<script src="studio.js" defer></script>
@@ -119,7 +120,7 @@
 		}
 
 		/* FORM */
-	   .add-form-container {
+		 .add-form-container {
 			display: flex;
 			gap: 0.4rem;
 			background: #fff;
@@ -323,9 +324,9 @@
 		/* MODALS */
 		/* MODAL STACKING ORDER */
 		#image-settings-modal { z-index: 1000; } /* Base Level */
-		#connections-modal	  { z-index: 1050; } /* Level 2 */
-		#stitch-modal		  { z-index: 1060; } /* Level 3 */
-		#confirmation-modal	  { z-index: 1100; } /* Top Level (Alerts) */
+		#connections-modal		{ z-index: 1050; } /* Level 2 */
+		#stitch-modal			{ z-index: 1060; } /* Level 3 */
+		#confirmation-modal		{ z-index: 1100; } /* Top Level (Alerts) */
 		.modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 1000; }
 		.modal-content { width: 95%; max-width: 900px; height: 90vh; background: #f4f4f9; border-radius: 0.5rem; position: relative; overflow: hidden; display: flex; flex-direction: column; }
 		.modal-header { padding: 0.5rem 1rem; background: #fff; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); }
@@ -728,9 +729,17 @@
 
 	<div class="tabs">
 		<div id="tab-list" class="tab-btn active" onclick="switchView('list')">📋 BOM</div>
-		<div id="tab-map" class="tab-btn" onclick="switchView('map')">🖼️  Images</div>
+		<div id="tab-map" class="tab-btn" onclick="switchView('map')">🖼️	 Images</div>
 		<div id="tab-nets" class="tab-btn" onclick="switchView('nets')">🕸️ Nets</div>
 		<div id="tab-inspect" class="tab-btn" onclick="switchView('inspect')">🔍 Inspect</div>
+		<div id="tab-schema" class="tab-btn" onclick="switchView('schema')">
+			<svg width="16" height="16" viewBox="0 0 16 16" style="vertical-align: middle; margin-right: 4px;">
+				<line x1="2" y1="11" x2="14" y2="11" stroke="currentColor" stroke-width="1.5"/>
+				<line x1="8" y1="1" x2="8" y2="11" stroke="currentColor" stroke-width="1.5"/>
+				<circle cx="8" cy="11" r="2" fill="currentColor"/>
+			</svg>
+			Schema
+		</div>
 	</div>
 </header>
 
@@ -841,6 +850,7 @@
 		<div class="list-fixed-top">
 			<div class="actions-bar">
 				 <button class="secondary" onclick="exportKiCad()" title="Export KiCad">💾 KiCad</button>
+				 <button class="secondary" onclick="exportSpice()" title="Export SPICE">💾 SPICE</button>
 			</div>
 		</div>
 		<div class="list-scroll-area">
@@ -882,9 +892,18 @@
 		</div>
 	</div>
 
+	<!-- 5. SCHEMA VIEW — Schematic ReTrace (lazy-loaded iframe) -->
+	<div id="view-schema" class="view-section" style="padding:0; overflow:hidden; height:100%;">
+		<iframe
+			id="schema-frame"
+			style="width:100%; height:100%; border:none; display:block;"
+			src=""
+		></iframe>
+	</div>
+
 </main>
 
-<footer class="app-footer">Copyright © 2025 Taras Greben — <a href="https://pcb.etaras.com">pcb.eTaras.com</a></footer>
+<footer class="app-footer">Copyright © 2025—2026 Taras Greben — <a href="https://pcb.etaras.com">pcb.eTaras.com</a></footer>
 
 <!-- COMPONENT TOOL MODAL -->
 <div style="display:none" id="tool-modal" class="modal-overlay"><div class="modal-content"><div class="modal-header"><h3 style="margin:0" id="tool-title">Component Tool</h3><button class="close-btn" onclick="closeTool()">×</button></div><div id="tool-selector"><h4 style="color:#64748b; margin-top:0">Choose:</h4><div class="selector-grid" id="selector-grid"></div></div><iframe id="tool-frame" src=""></iframe></div></div>
