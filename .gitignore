@@ -22,6 +22,8 @@ yarn-error.log*
 # --- Exported Data & Backups ---
 # Prevent committing personal board data, exports, or test images
 *.zip
+!docs/assets/
+!docs/assets/kicad-symbols-master.zip
 *.csv
 *.net
 *.kicad_sch
