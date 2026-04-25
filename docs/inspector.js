@@ -12,8 +12,6 @@ class Inspector {
 	static MARKER_S = 40;
 	static MARKER_R = 18;
 
-	static ACTIVE_NETNODE_INTERACT_RADIUS = 20;
-
 	constructor(db, cv) {
 		this.db = db;
 		this.cv = cv;
@@ -134,6 +132,47 @@ class Inspector {
 
 		this.updateNetUI();
 		await this.renderGrid();
+	}
+
+	static nodeMarkerSDF(x, y) {
+		// Approximate the teardrop-like Path2D with a partially rounded box.
+		const s = Inspector.MARKER_S;
+		const cx = x - s / 2;
+		const cy = y + s / 2;
+
+		const r = (cx < 0 && cy > 0) ? 0 : Inspector.MARKER_R;
+		const b = s / 2 - r;
+
+		const absX = Math.abs(cx) - b;
+		const absY = Math.abs(cy) - b;
+		// Reminder that hypot is glsl's length.
+		return Math.hypot(Math.max(absX, 0), Math.max(absY, 0)) + Math.min(Math.max(absX, absY), 0) - r;
+	}
+
+	getInteractableNetNodeAt(imgId, x, y) {
+		if (!this.activeNet || !this.activeNet.nodes) return [null, -1];
+
+		const cosR = Math.cos(Math.PI / 4);
+		const sinR = Math.sin(Math.PI / 4);
+
+		// Pick the visually first top node for which the point (x,y) is inside.
+		for (let i = this.activeNet.nodes.length - 1; i >= 0; i--) {
+			const node = this.activeNet.nodes[i];
+			if (node.imgId !== imgId) continue;
+
+			// 1. Translate click point to be relative to node anchor.
+			const dx = x - node.x;
+			const dy = y - node.y;
+			// 2. Rotate the point by +45 degrees to align with the shape's original orientation for SDF evaluation.
+			const rotX = dx * cosR - dy * sinR;
+			const rotY = dx * sinR + dy * cosR;
+
+			// Calculate the signed distance to current node and perform the hit test.
+			const d = Inspector.nodeMarkerSDF(rotX, rotY);
+			if (d <= 0) return [node, i];
+		}
+
+		return [null, -1];
 	}
 
 	async selectBestMobilePair(sortedImgs, selectionSet) {
@@ -296,11 +335,16 @@ class Inspector {
 				async (x, y, e) => {
 					if (e.button !== 0) return;
 					if (wasActiveBeforeDown) {
-						/* const hit = await this.handleNodeClick(id, x, y);
-						if (!hit) {
+						const [hitNode, hitNodeIdx] = this.getInteractableNetNodeAt(id, x, y);
+						if (hitNode) {
+							const now = Date.now();
+							if (viewer.lastClickTime && (now - viewer.lastClickTime < 300)) {
+								await this.handleNodeClick(id, hitNode, hitNodeIdx);
+							}
+							viewer.lastClickTime = now;
+						} else {
 							await this.handleAddNode(id, x, y);
-						} */
-						await this.handleAddNode(id, x, y);
+						}
 					}
 				},
 				// Drag Handler
@@ -310,14 +354,9 @@ class Inspector {
 						return -1;
 					}
 					if (mode === 'check') {
-						// Only allow dragging of primary nodes.
-						const foundIdx = this.activeNet.nodes.findIndex(n => {
-							if (n.imgId !== id) return false;
-							// dx, dy are actually in absolute coordinates here.
-							const dist = Math.hypot(n.x - dx, n.y - dy);
-							return (dist * viewer.t.k) < Inspector.ACTIVE_NETNODE_INTERACT_RADIUS;
-						});
-						return foundIdx;
+						// Only allows dragging of primary nodes.
+						const [hitNode, hitNodeIdx] = this.getInteractableNetNodeAt(id, dx, dy);
+						return hitNodeIdx;
 					} else if (mode === 'move') {
 						const n = this.activeNet.nodes[idx];
 						if (n) {
@@ -356,7 +395,13 @@ class Inspector {
 			cvs.addEventListener('wheel', () => { viewer.userInteracted = true; });
 
 			viewer.onMouseMove = (x, y) => {
-				if (this.masterId === id) this.syncCursors(id, x, y);
+				if (this.masterId === id) {
+					this.syncCursors(id, x, y);
+					const [hitNode, hitNodeIdx] = this.getInteractableNetNodeAt(id, x, y);
+					viewer.canvas.style.cursor = hitNode ? 'pointer' : 'default';
+				} else {
+					viewer.canvas.style.cursor = 'default';
+				}
 			};
 
 			const updateView = () => {
@@ -403,39 +448,23 @@ class Inspector {
 		if (this.masterId) this.syncCursors(this.masterId, null, null, true);
 	}
 
-	// TODO: Left click to edit label interacts weirdly with drag to move.
-	/* async handleNodeClick(imgId, x, y) {
-		if (!this.activeNet || !this.netNodeCache[imgId]) return false;
-		const viewer = this.viewers[imgId];
-		if (!viewer) return false;
-
-		const HIT_RADIUS = 20;
-		const hit = this.netNodeCache[imgId].find(n => {
-			const dist = Math.hypot(n.x - x, n.y - y);
-			return (dist * viewer.t.k) < HIT_RADIUS;
-		});
-
-		if (hit) {
-			const res = await requestInput("Edit Node", "Node Name", hit.label, {
-				extraBtn: { label: 'Delete', value: '__DELETE__', class: 'danger' },
-				helpHtml: PIN_HELP_HTML,
+	async handleNodeClick(imgId, hitNode, hitNodeIdx) {
+		const res = await requestInput("Edit Node", "Node Name", hitNode.label, {
+			extraBtn: { label: 'Delete', value: '__DELETE__', class: 'danger' },
+			helpHtml: (typeof PIN_HELP_HTML !== 'undefined') ? PIN_HELP_HTML : null,
 				validate: validateNetName,
 				validateArgs: this.activeNet ? [this.activeNet.id] : null
-			});
-			if (res === '__DELETE__') {
-				const idx = this.activeNet.nodes.indexOf(hit.origNode);
-				if (idx > -1) this.activeNet.nodes.splice(idx, 1);
-			} else if (res) {
-				hit.origNode.label = res;
-			}
-			if (res) {
-				this.updateNetUI();
-				Object.values(this.viewers).forEach(v => v.draw());
-			}
-			return true;
+		});
+		if (res === '__DELETE__') {
+			this.activeNet.nodes.splice(hitNodeIdx, 1);
+		} else if (res) {
+			hitNode.label = res;
 		}
-		return false;
-	} */
+		if (res) {
+			this.updateNetUI();
+			Object.values(this.viewers).forEach(v => v.draw());
+		}
+	}
 
 	toggleLayer(id, isVisible) {
 		if (isVisible) this.visibleIds.add(id);
@@ -708,6 +737,50 @@ class Inspector {
 
 		// End of node rendering.
 		ctx.restore();
+
+		// --- Debug SDF ---
+		/*
+		let pocNode = null;
+		if (this.activeNet && this.activeNet.nodes) {
+			pocNode = this.activeNet.nodes.find(n => n.imgId == id);
+		}
+
+		if (pocNode) {
+			const w = ctx.canvas.width;
+			const h = ctx.canvas.height;
+			const imgData = ctx.getImageData(0, 0, w, h);
+			const data = imgData.data;
+
+			let drawX = isMirrored ? bmpWidth - pocNode.x : pocNode.x;
+			const cosR = Math.cos(Math.PI / 4);
+			const sinR = Math.sin(Math.PI / 4);
+
+			for (let py = 0; py < h; py++) {
+				for (let px = 0; px < w; px++) {
+					const wx = (px - viewer.t.x) / viewer.t.k;
+					const wy = (py - viewer.t.y) / viewer.t.k;
+
+					const dx = wx - drawX;
+					const dy = wy - pocNode.y;
+
+					const rx = dx * cosR - dy * sinR;
+					const ry = dx * sinR + dy * cosR;
+
+					const dist = Inspector.nodeMarkerSDF(rx, ry);
+
+					if (dist <= 0) {
+						const idx = (py * w + px) * 4;
+						data[idx] = 255;
+						data[idx + 1] = 0;
+						data[idx + 2] = 0;
+						data[idx + 3] = 255;
+					}
+				}
+			}
+			ctx.putImageData(imgData, 0, 0);
+		}
+		*/
+		// -----------------------------
 
 		{ // Draw crosshairs.
 			let cx, cy, color = Inspector.CURSOR_MASTER_COLOR;
