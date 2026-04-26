@@ -486,7 +486,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 	resizeCanvas();
 
 	try {
-		if (MODE === 'standalone') {
+		if (MODE === 'standalone' && !window._embeddedMode && !S.hasData) {
 			setStatus('Import a netlist or switch to PCB ReTrace', 'warn');
 			render();
 		} else {
