@@ -237,6 +237,14 @@ class Inspector {
 		}
 	}
 
+	hideCrosshair() {
+		this.masterId = null;
+		this.cursorState = null;
+		Object.values(this.viewers).forEach(v => {
+			v.cursorPos = null; v.setDimmed(false); v.draw();
+		});
+	};
+
 	async renderGrid() {
 		const savedStates = {};
 		if (this.viewers) {
@@ -315,7 +323,8 @@ class Inspector {
 
 			const cvs = document.createElement('canvas');
 			cvs.id = `inspect-cvs-${id}`;
-			cvs.style.cssText = "display:block; position:absolute; top:0; left:0; width:100%; height:100%;";
+			cvs.style.cssText = "display:block; position:absolute; top:0; left:0; width:100%; height:100%; outline:none;";
+			cvs.tabIndex = 0;
 			cell.appendChild(cvs);
 
 			const lbl = document.createElement('div');
@@ -372,7 +381,12 @@ class Inspector {
 			viewer.userInteracted = false;
 
 			viewer.onPointerDown = (e) => {
+				/** 
+				 * NOTE: This event gets suppressed when clicking on the active canvas,
+				 * as the net node adding logic takes priority.
+				 */
 				viewer.userInteracted = true;
+				cvs.focus();
 				if (e.isPrimary || e.button === 0) {
 					wasActiveBeforeDown = (this.masterId === id);
 					if (this.masterId !== id) {
@@ -419,15 +433,17 @@ class Inspector {
 
 			viewer.onResize = (w, h) => updateView();
 
+			cvs.addEventListener('keydown', (e) => {
+				if (e.code == "KeyX" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat) {
+					this.hideCrosshair(e);
+					e.stopPropagation();
+				}
+			});
+
 			cvs.addEventListener('contextmenu', (e) => {
 				// TODO: Make this do something more useful than hiding the crosshair
 				//       like the ability to paintover/highlight the copper tracks.
 				e.preventDefault(); e.stopPropagation();
-				this.masterId = null;
-				this.cursorState = null;
-				Object.values(this.viewers).forEach(v => {
-					v.cursorPos = null; v.setDimmed(false); v.draw();
-				});
 			});
 
 			this.viewers[id] = viewer;
@@ -443,9 +459,14 @@ class Inspector {
 			} catch (e) { console.error("Inspector img load error", e); }
 		}
 
+		// Prepare render cache.
 		this.updateAllNetNodeCache();
 		this.updateProjectedNetNodeCache();
-		if (this.masterId) this.syncCursors(this.masterId, null, null, true);
+		// Initialize .
+		if (this.masterId) {
+			this.viewers[this.masterId].canvas.focus();
+			this.syncCursors(this.masterId, null, null, true);
+		}
 	}
 
 	async handleNodeClick(imgId, hitNode, hitNodeIdx) {
@@ -629,7 +650,6 @@ class Inspector {
 		const viewer = this.viewers[id];
 		if (!viewer) return;
 		const ik = 1 / k;
-		// console.log(viewer, viewer.isMirrored);
 
 		const isMirrored = viewer.isMirrored && viewer.bmp;
 		const bmpWidth = isMirrored ? viewer.bmp.width : 0;
