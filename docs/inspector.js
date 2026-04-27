@@ -381,7 +381,9 @@ class Inspector {
 		if (hit) {
 			const res = await requestInput("Edit Node", "Node Name", hit.label, {
 				extraBtn: { label: 'Delete', value: '__DELETE__', class: 'danger' },
-				helpHtml: PIN_HELP_HTML
+				helpHtml: PIN_HELP_HTML,
+				validate: validateNetName,
+				validateArgs: this.activeNet ? [this.activeNet.id] : null
 			});
 			if (res === '__DELETE__') {
 				const idx = this.activeNet.nodes.indexOf(hit.origNode);
@@ -914,12 +916,14 @@ class Inspector {
 		const nextIdx = this.activeNet ? this.activeNet.nodes.length + 1 : 1;
 		let defaultLabel = `P${nextIdx}`;
 
-		// NEW: Async Smart Suggestion
+		// Async Smart Suggestion
 		const smartLabel = await this.getSuggestedLabel(imgId, x, y);
 		if (smartLabel) defaultLabel = smartLabel;
 
 		const label = await requestInput("Add Node", "Pad/Pin Name", defaultLabel, {
-			helpHtml: (typeof PIN_HELP_HTML !== 'undefined') ? PIN_HELP_HTML : null
+			helpHtml: (typeof PIN_HELP_HTML !== 'undefined') ? PIN_HELP_HTML : null,
+			validate: validateNetName,
+			validateArgs: this.activeNet ? [this.activeNet.id] : null
 		});
 
 		if(label) {

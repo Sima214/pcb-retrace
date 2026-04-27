@@ -1397,23 +1397,54 @@ function confirmAction(message, btnText = "Confirm") {
 		const msgEl = document.getElementById('confirm-msg');
 		const okBtn = document.getElementById('confirm-btn-ok');
 		const cancelBtn = document.getElementById('confirm-btn-cancel');
+		const closeBtn = modal.querySelector('.close-btn');
+		const modalContext = 'confirmation-modal';
 
 		msgEl.innerText = message;
 		okBtn.innerText = btnText;
 
-		// Cleanup old handlers by reassigning
-		okBtn.onclick = () => {
+		let resultToResolve = false;
+
+		// 1. Cleanup & Resolve
+		const close = () => {
+			window.removeEventListener('popstate', onPopState);
 			modal.style.display = 'none';
-			resolve(true);
+			resolve(resultToResolve);
 		};
 
-		cancelBtn.onclick = () => {
-			modal.style.display = 'none';
-			resolve(false);
+		// 2. Handle History Changes (Back Button / Escape)
+		const onPopState = () => {
+			close();
 		};
 
+		// 3. Handle UI Actions (OK / Cancel)
+		const commit = (res) => {
+			resultToResolve = res;
+			if (history.state && history.state.context === modalContext) {
+				history.back(); // This triggers onPopState -> close()
+			} else {
+				close();
+			}
+		};
+
+		// 4. Setup DOM (Clone to cleanly remove old listeners)
+		const newOk = okBtn.cloneNode(true);
+		const newCancel = cancelBtn.cloneNode(true);
+		okBtn.replaceWith(newOk);
+		cancelBtn.replaceWith(newCancel);
+
+		newOk.onclick = (e) => { e.stopPropagation(); commit(true); };
+		newCancel.onclick = (e) => { e.stopPropagation(); commit(false); };
+		closeBtn.onclick = (e) => { e.stopPropagation(); e.preventDefault(); commit(false); };
+
+		// 5. Open & Push State
+		if (!history.state || history.state.context !== modalContext) {
+			history.pushState({ context: modalContext }, "", "");
+		}
+
+		window.addEventListener('popstate', onPopState);
 		modal.style.display = 'flex';
-		cancelBtn.focus(); // Default focus on Cancel
+		newCancel.focus(); // Default focus on Cancel
 	});
 }
 
@@ -2454,6 +2485,21 @@ async function autoStitchNewImage(newId) {
 	}
 }
 
+// --- NEW HELPER: Check Node Collision ---
+async function checkNodeCollision(nodeLabel, excludeNetId = null) {
+	if (!nodeLabel || typeof currentBomId === 'undefined') return[];
+	const allNets = await db.getNets();
+	const projectNets = allNets.filter(n => n.projectId === currentBomId);
+	const collisions =[];
+	for (const net of projectNets) {
+		if (net.id === excludeNetId) continue;
+		if (net.nodes && net.nodes.some(n => n.label === nodeLabel)) {
+			collisions.push(net.name);
+		}
+	}
+	return collisions;
+}
+
 const ImageGraph = {
 	// Helper: Invert 3x3 Matrix
 	invertH(m) {
@@ -2721,6 +2767,7 @@ function requestInput(title, label, val, opts = {}) {
 		}
 
 		let resultToResolve = null;
+		let isInputValid = true; // Updated by opts.validate; always true when no validator is set
 
 		// 1. Cleanup & Resolve
 		const close = () => {
@@ -2738,6 +2785,18 @@ function requestInput(title, label, val, opts = {}) {
 
 		// 3. Handle UI Actions (OK / Cancel)
 		const commit = (v) => {
+			// Block submission when a validator is attached and the current value is invalid.
+			// Cancel (null) and extra-button sentinel values (e.g. '__DELETE__') always pass through.
+			if (v !== null && opts.validate && !isInputValid && v !== '__DELETE__') {
+				inp.style.borderColor = '#ef4444';
+				inp.style.backgroundColor = '#fef2f2';
+				setTimeout(() => {
+					inp.style.borderColor = '#cbd5e1';
+					inp.style.backgroundColor = '';
+				}, 400);
+				return; // Block submission
+			}
+
 			resultToResolve = v;
 
 			// SAFETY CHECK: Only go back if we are still in the modal state.
@@ -2782,6 +2841,33 @@ function requestInput(title, label, val, opts = {}) {
 			// Let NavManager handle Escape -> history.back()
 		};
 
+		// Generic live-validation hook.
+		// opts.validate: async (rawValue: string, ...args) => { sanitized?: string, isValid: boolean, feedbackHtml: string }
+		// The function owns all domain-specific logic (sanitization, format checks, collision lookups,
+		// etc.).  requestInput only wires up the plumbing and gates OK on isValid.
+		if (opts.validate) {
+			const validateArgs = opts.validateArgs ? opts.validateArgs : [];
+			inp.addEventListener('input', async () => {
+				const result = await opts.validate(inp.value, ...validateArgs);
+
+				// Apply sanitized value if the validator changed it
+				if (result.sanitized !== undefined && inp.value !== result.sanitized) {
+					const pos = inp.selectionStart;
+					inp.value = result.sanitized;
+					inp.setSelectionRange(pos, pos);
+				}
+
+				isInputValid = result.isValid;
+
+				// Always show the help area while the user is typing so feedback is visible
+				helpToggle.style.display = 'block';
+				helpContent.style.display = 'block';
+				helpContent.innerHTML = result.feedbackHtml + (opts.helpHtml || '');
+			});
+			// Trigger once on open so the field is validated immediately
+			setTimeout(() => inp.dispatchEvent(new Event('input')), 50);
+		}
+
 		// 5. Open & Push State
 		// Use direct history.pushState to ensure it happens immediately and locally
 		// (Bypassing any potential NavManager checks/delays)
@@ -2795,6 +2881,51 @@ function requestInput(title, label, val, opts = {}) {
 		inp.select();
 	});
 }
+
+/**
+ * Validator for net node names (for requestInput).
+ */
+async function validateNetName(raw, netId) {
+	// 1. Sanitize: strip spaces, enforce single dot with digits-only suffix
+	let v = raw.replace(/\s+/g, '');
+	const parts = v.split('.');
+	if (parts.length > 2) {
+		v = parts[0] + '.' + parts.slice(1).join('').replace(/[^0-9]/g, '');
+	} else if (parts.length === 2) {
+		v = parts[0] + '.' + parts[1].replace(/[^0-9]/g, '');
+	}
+
+	if (!v) {
+		return { sanitized: v, isValid: false, feedbackHtml: '' };
+	}
+
+	// 2. Format check
+	const validFormat = /^[A-Za-z0-9_-]+\.[1-9][0-9]*$/.test(v);
+	if (!validFormat) {
+		return {
+			sanitized: v,
+			isValid: false,
+			feedbackHtml: '<div style="color:#ef4444; font-weight:bold; margin-bottom:4px;">❌ Format must be Ref.Pin (e.g. R1.1)</div>',
+		};
+	}
+
+	// 3. Collision check
+	const collisions = await checkNodeCollision(v, netId);
+	if (collisions.length > 0) {
+		return {
+			sanitized: v,
+			isValid: true, // Warn but still allow — user may be intentionally reassigning
+			feedbackHtml: `<div style="color:#d97706; font-weight:bold; margin-bottom:4px;">⚠️ Node already used in net(s): ${collisions.join(', ')}</div>`,
+		};
+	}
+
+	return {
+		sanitized: v,
+		isValid: true,
+		feedbackHtml: '<div style="color:#10b981; font-weight:bold; margin-bottom:4px;">✅ Valid format</div>',
+	};
+}
+
 
 /* --- URL IMPORT LOGIC --- */
 

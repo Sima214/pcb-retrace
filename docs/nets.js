@@ -1,15 +1,155 @@
-/* nets.js - Netlist Management (v2) */
+/* nets.js - Netlist Management (v3) */
 
 class NetManager {
 	constructor(db) {
 		this.db = db;
+		this.showOnlyProblematic = false; // Toggle state
 	}
 
-async render() {
+	// Updates the global toolbar button state
+	updateTopBar(problemCount) {
+		const bar = document.querySelector('#view-nets .actions-bar');
+		if (!bar) return;
+		let fixBtn = document.getElementById('net-fix-btn');
+		if (!fixBtn) {
+			fixBtn = document.createElement('button');
+			fixBtn.id = 'net-fix-btn';
+			fixBtn.onclick = () => this.toggleFixMode();
+			bar.appendChild(fixBtn);
+		}
+
+		if (problemCount === 0) {
+			fixBtn.className = 'secondary';
+			fixBtn.innerHTML = '✅ All Valid';
+			fixBtn.disabled = true;
+			fixBtn.style.opacity = '0.7';
+			this.showOnlyProblematic = false; // Auto-reset if everything is fixed
+		} else {
+			fixBtn.disabled = false;
+			fixBtn.style.opacity = '1';
+			if (this.showOnlyProblematic) {
+				fixBtn.className = 'primary'; // Active/Pressed state
+				fixBtn.innerHTML = `Showing ${problemCount} Issues (Click to Reset)`;
+			} else {
+				fixBtn.className = 'danger'; // Needs attention state
+				fixBtn.innerHTML = `⚠️ ${problemCount} Issues Found`;
+			}
+		}
+	}
+
+	// Toggles the filter and checks for empty nets
+	async toggleFixMode() {
+		if (this.showOnlyProblematic) {
+			this.showOnlyProblematic = false;
+			this.render();
+			return;
+		}
+
+		// Turning ON: Check for empty nets first
+		const allNets = await this.db.getNets();
+		const nets = allNets.filter(n => n.projectId === currentBomId);
+		const emptyNets = nets.filter(n => !n.nodes || n.nodes.length === 0);
+
+		if (emptyNets.length > 0) {
+			if (await confirmAction(`Found ${emptyNets.length} empty net(s).\n\nDelete them to clean up?`, "Delete Empty Nets")) {
+				for (const n of emptyNets) {
+					await this.db.deleteNet(n.id);
+				}
+			}
+		}
+
+		this.showOnlyProblematic = true;
+		this.render();
+	}
+
+	// Conflict Resolution Logic
+	async resolveNet(netId) {
+		const allNets = await this.db.getNets();
+		const projectNets = allNets.filter(n => n.projectId === currentBomId);
+		const net = projectNets.find(n => n.id === netId);
+		if (!net) return;
+
+		// 1. Handle Empty Nets
+		if (!net.nodes || net.nodes.length === 0) {
+			if (await confirmAction(`This net is completely empty.\n\nDelete it?`, "Delete")) {
+				await this.db.deleteNet(net.id);
+				this.render();
+			}
+			return;
+		}
+
+		// Rebuild mapping locally to find exact duplicates
+		const nodeMap = {};
+		projectNets.forEach(n => {
+			if(!n.nodes) return;
+			n.nodes.forEach(node => {
+				if (!nodeMap[node.label]) nodeMap[node.label] = [];
+				nodeMap[node.label].push(n);
+			});
+		});
+
+		// 2. Check for formatting errors first
+		const formatErrIdx = net.nodes.findIndex(n => !/^[A-Za-z0-9_-]+\.[1-9][0-9]*$/.test(n.label));
+		if (formatErrIdx > -1) {
+			const node = net.nodes[formatErrIdx];
+			alert(`Node "${node.label}" has an invalid format.\n\nPlease rename it using the "Ref.Pin" format (e.g., R1.1).`);
+			return this.editNode(net.id, formatErrIdx);
+		}
+
+		// 3. Check for duplicates and build explanation matrix
+		const conflicts =[];
+		const otherNetsMap = new Map(); // Maps id -> net object
+
+		net.nodes.forEach(node => {
+			if (nodeMap[node.label] && nodeMap[node.label].length > 1) {
+				const others = nodeMap[node.label].filter(n => n.id !== net.id);
+				others.forEach(o => {
+					conflicts.push(`• ${node.label} is also in ${o.name}`);
+					otherNetsMap.set(o.id, o);
+				});
+			}
+		});
+
+		if (conflicts.length > 0) {
+			const otherNets = Array.from(otherNetsMap.values());
+			// Pick the first conflicting net as the target for merging
+			const targetNet = otherNets[0];
+
+			let msg = `Conflict: Nodes in this net exist elsewhere:\n${conflicts.join('\n')}\n\n`;
+			msg += `Would you like to merge all nodes from ${net.name} into ${targetNet.name} and delete ${net.name}?\n\n`;
+			msg += `(Click "Cancel" to close this dialog and rename/fix the nodes manually)`;
+
+			// confirmAction already sets focus to the Cancel button by default
+			const doMerge = await confirmAction(msg, `Merge into ${targetNet.name}`);
+
+			if (doMerge) {
+				// SAFETY CHECK: Warn if merging a larger net into a smaller one
+				if (net.nodes.length > targetNet.nodes.length) {
+					const warnMsg = `WARNING: You are merging a larger net (${net.nodes.length} nodes) into a smaller net (${targetNet.nodes.length} nodes).\n\nAre you sure you want to completely merge ${net.name} into ${targetNet.name}?`;
+					const sure = await confirmAction(warnMsg, "Yes, Merge Anyway");
+					if (!sure) return;
+				}
+
+				// Perform Merge (add all nodes, skipping exact label duplicates)
+				const targetLabels = new Set(targetNet.nodes.map(n => n.label));
+				for (const n of net.nodes) {
+					if (!targetLabels.has(n.label)) {
+						targetNet.nodes.push(n);
+						targetLabels.add(n.label);
+					}
+				}
+				await this.db.addNet(targetNet);
+				await this.db.deleteNet(net.id);
+				this.render();
+			}
+		}
+	}
+
+	async render() {
 		const tbody = document.getElementById('nets-body');
 		if(!tbody) return;
 
-		// Safety check: If no board is loaded, clear the table
+		// Safety check
 		if (typeof currentBomId === 'undefined' || !currentBomId) {
 			 tbody.innerHTML = '';
 			 return;
@@ -18,9 +158,42 @@ async render() {
 		tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#888;">Loading...</td></tr>';
 
 		const allNets = await this.db.getNets();
-
-		// --- FIX: Filter by Current Board ID ---
 		const nets = allNets.filter(n => n.projectId === currentBomId);
+
+		// --- NEW: Pre-calculate errors ---
+		const nodeMap = {}; // label -> array of netIds
+		let totalProblems = 0;
+
+		nets.forEach(net => {
+			if (!net.nodes || net.nodes.length === 0) {
+				net._hasError = true;
+				net._isEmpty = true;
+			} else {
+				net.nodes.forEach(node => {
+					if (!nodeMap[node.label]) nodeMap[node.label] =[];
+					nodeMap[node.label].push(net.id);
+				});
+			}
+		});
+
+		nets.forEach(net => {
+			let netHasError = net._isEmpty || false;
+			if (net.nodes) {
+				net.nodes.forEach(node => {
+					node._isFormatInvalid = !/^[A-Za-z0-9_-]+\.[1-9][0-9]*$/.test(node.label);
+					node._isDuplicate = nodeMap[node.label] && nodeMap[node.label].length > 1;
+					if (node._isFormatInvalid || node._isDuplicate) {
+						node._hasError = true;
+						netHasError = true;
+					}
+				});
+			}
+			net._hasError = netHasError;
+			if (netHasError) totalProblems++;
+		});
+
+		// Update toolbar toggle
+		this.updateTopBar(totalProblems);
 
 		tbody.innerHTML = '';
 
@@ -29,28 +202,45 @@ async render() {
 			return;
 		}
 
-		nets.forEach(net => {
-			const tr = document.createElement('tr');
+		let renderedCount = 0;
 
+		nets.forEach(net => {
+			// Filter check
+			if (this.showOnlyProblematic && !net._hasError) return;
+
+			renderedCount++;
+			const tr = document.createElement('tr');
 			tr.style.height = 'auto';
 			tr.style.minHeight = '2.2rem';
 
-			// Target Icon for Editing
 			const targetIcon = `<span style="cursor:pointer; margin-right:0.5rem;" onclick="netManager.editNet('${net.id}')" title="Edit Net on Board">🎯</span>`;
+
+			// NEW: Net Level Fix Button
+			const fixBtn = net._hasError ? `<button class="danger sm-btn" style="padding:0 6px; margin-right:6px; font-size:0.75rem;" onclick="netManager.resolveNet('${net.id}')" title="Resolve Issues">⚠️ Fix</button>` : '';
 
 			let nodesHtml = '';
 			net.nodes.forEach((n, idx) => {
-				nodesHtml += `<span class="net-chip" onclick="netManager.editNode('${net.id}', ${idx})" title="Edit Node">${n.label}</span>`;
+				let style = "class='net-chip'";
+				let warn = "";
+				// NEW: Node Level Warning Styles
+				if (n._hasError) {
+					style = "class='net-chip' style='border-color:#ef4444; background:#fef2f2; color:#b91c1c;'";
+					warn = n._isDuplicate ? " ⚠️(Dup)" : " ❌(Fmt)";
+				}
+				nodesHtml += `<span ${style} onclick="netManager.editNode('${net.id}', ${idx})" title="Edit Node">${n.label}${warn}</span>`;
 			});
 
 			tr.innerHTML = `
-				<td style="display:flex; align-items:center; vertical-align:top; height:auto;">
+				<td style="display:flex; align-items:center; vertical-align:top; height:auto; padding-top:6px">
+					<div style="display:flex; flex-wrap:wrap; gap:4px; padding:4px 0;">
 					${targetIcon}
 					<input type="text" value="${net.name}" onchange="netManager.rename('${net.id}', this.value)" style="border:none; background:transparent; font-weight:bold; flex:1; min-width:0;">
+					${fixBtn}
+					</div>
 				</td>
 
 				<td style="white-space:normal; height:auto; overflow:visible;">
-					<div style="display:flex; flex-wrap:wrap; gap:4px; padding:2px 0;">${nodesHtml}</div>
+					<div style="display:flex; flex-wrap:wrap; gap:4px; padding:4px 0;">${nodesHtml}</div>
 				</td>
 
 				<td style="text-align:right; vertical-align:top; height:auto;">
@@ -59,6 +249,11 @@ async render() {
 			`;
 			tbody.appendChild(tr);
 		});
+
+		// Empty state if filter hides everything
+		if (renderedCount === 0 && this.showOnlyProblematic) {
+			tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:2rem; color:#10b981;">No issues found! 🎉</td></tr>';
+		}
 	}
 
 	// Edit Net in Inspector
@@ -80,7 +275,9 @@ async render() {
 
 		const res = await requestInput("Edit Node", "Node Name", node.label, {
 			extraBtn: { label: 'Delete', value: '__DELETE__', class: 'danger' },
-			helpHtml: PIN_HELP_HTML
+			helpHtml: PIN_HELP_HTML,
+			validate: validateNetName,
+			validateArgs: [netId]
 		});
 
 		if (res === '__DELETE__') {
