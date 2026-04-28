@@ -66,6 +66,11 @@ class PcbDatabase {
 	async addNet(n) { return this._tx('nets', 'readwrite', s => s.put(n)); }
 	async deleteNet(id) { return this._tx('nets', 'readwrite', s => s.delete(id)); }
 
+	// Inspector Drawing Extensions
+	async getTraces() { return this._tx('traces', 'readonly', s => s.getAll()); }
+	async addTrace(trace) { return this._tx('traces', 'readwrite', s => s.put(trace)); }
+	async deleteTrace(id) { return this._tx('traces', 'readwrite', s => s.delete(id)); }
+
 	// POI Extensions
 	async addOverlap(ov) { return this._tx('overlappedImages', 'readwrite', s => s.put(ov)); }
 	async getOverlapsForPair(id1, id2) {
@@ -606,6 +611,7 @@ async function exportDeviceZIP() {
 
 	// Fetch ALL nets once (since we don't have an index, we filter in JS)
 	const allNets = await db.getNets();
+	const allTraces = await db.getTraces();
 	const allSchemas = await db.getSchemas();
 	const allSchemaComps = await db.getSchemaComponents();
 
@@ -624,7 +630,7 @@ HOW TO USE:
 	// 2. Generate Manifest
 	const manifest = {
 		device: dev,
-		version: DB_VER,
+		version: window.PcbDbCore.DB_VER,
 		source: "pcb.etaras.com",
 		boards: []
 	};
@@ -637,6 +643,7 @@ HOW TO USE:
 
 		// Filter nets for this specific board
 		const boardNets = allNets.filter(n => n.projectId === bom.id);
+		const boardTraces = allTraces.filter(t => t.projectId === bom.id);
 		const boardSchemas = allSchemas.filter(s => s.boardId === bom.id);
 		const boardSchemaIds = new Set(boardSchemas.map(s => s.id));
 		const boardSchemaComps = allSchemaComps.filter(sc => boardSchemaIds.has(sc.schemaId));
@@ -656,6 +663,7 @@ HOW TO USE:
 			images: imgMeta,
 			overlaps: Array.from(overlapsMap.values()),
 			nets: boardNets,
+			traces: boardTraces,
 			schemas: boardSchemas,
 			schemaComponents: boardSchemaComps
 		});
@@ -995,7 +1003,15 @@ async function restoreDevice(manifest, zip) {
 				if (!importNetIds.has(ln.id)) await db.deleteNet(ln.id);
 			}
 
-			// 5. Prune Schemas
+			// 5. Prune Traces
+			const allTraces = await db.getTraces();
+			const localTraces = allTraces.filter(t => t.projectId === boardId);
+			const importTraceIds = new Set((boardData.traces || []).map(t => t.id));
+			for (const lt of localTraces) {
+				if (!importTraceIds.has(lt.id)) await db.deleteTrace(lt.id);
+			}
+
+			// 6. Prune Schemas
 			const allSchemas = await db.getSchemas();
 			const localSchemas = allSchemas.filter(s => s.boardId === boardId);
 			const importSchemaIds = new Set((boardData.schemas || []).map(s => s.id));
@@ -1067,6 +1083,20 @@ async function restoreDevice(manifest, zip) {
 				} else {
 					const existingNet = await db._tx('nets', 'readonly', s => s.get(net.id));
 					if (!existingNet) await db.addNet(net);
+				}
+			}
+		}
+
+		// Traces
+		if (boardData.traces) {
+			for (const trace of boardData.traces) {
+				// Ensure correct association
+				trace.projectId = boardId;
+				if (isNewer) {
+					await db.addTrace(trace);
+				} else {
+					const existingTrace = await db._tx('traces', 'readonly', s => s.get(trace.id));
+					if (!existingTrace) await db.addTrace(trace);
 				}
 			}
 		}
@@ -1182,7 +1212,15 @@ async function processImportData(data, zipObj) {
 			if (!importNetIds.has(ln.id)) await db.deleteNet(ln.id);
 		}
 
-		// 5. Schemas
+		// 5. Traces
+		const allTraces = await db.getTraces();
+		const localTraces = allTraces.filter(t => t.projectId === boardId);
+		const importTraceIds = new Set((data.traces || []).map(t => t.id));
+		for (const lt of localTraces) {
+			if (!importTraceIds.has(lt.id)) await db.deleteTrace(lt.id);
+		}
+
+		// 6. Schemas
 		const allSchemas = await db.getSchemas();
 		const localSchemas = allSchemas.filter(s => s.boardId === boardId);
 		const safeSchemas = data.schemas || new Array();
@@ -1258,6 +1296,19 @@ async function processImportData(data, zipObj) {
 			} else {
 				const existing = await db._tx('nets', 'readonly', s => s.get(net.id));
 				if (!existing) await db.addNet(net);
+			}
+		}
+	}
+
+	// Traces
+	if (data.traces) {
+		for (const trace of data.traces) {
+			trace.projectId = boardId;
+			if (isNewer) {
+				await db.addTrace(trace);
+			} else {
+				const existing = await db._tx('traces', 'readonly', s => s.get(trace.id));
+				if (!existing) await db.addTrace(trace);
 			}
 		}
 	}

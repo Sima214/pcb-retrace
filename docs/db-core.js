@@ -31,13 +31,16 @@ window.PcbDbCore = {
 			const os = d.createObjectStore('overlappedImages', {keyPath: 'id'});
 			os.createIndex('fromImageId', 'fromImageId');
 		}
+	
 		if (!d.objectStoreNames.contains('nets')) {
 			d.createObjectStore('nets', {keyPath: 'id'});
 		}
-
-		const netsStore = tx.objectStore('nets');
+		/* const netsStore = tx.objectStore('nets');
 		if (!netsStore.indexNames.contains('projectId')) {
 			netsStore.createIndex('projectId', 'projectId', {unique: false});
+		} */
+		if (!d.objectStoreNames.contains('traces')) {
+			const ts = d.createObjectStore('traces', {keyPath: 'id'});
 		}
 
 		if (!d.objectStoreNames.contains('pinDirections')) {

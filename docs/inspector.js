@@ -443,6 +443,14 @@ class Inspector {
 			cvs.addEventListener('contextmenu', (e) => {
 				// TODO: Make this do something more useful than hiding the crosshair
 				//       like the ability to paintover/highlight the copper tracks.
+				/**
+				 * For each canvas/view/image/layer/whatever else it is called:
+				 *  - Array of line stips or array of array containing points.
+				 *    Add new and enter editing mode with right click:
+				 *     - Right finalizes the new line.
+				 *     - Escape or x or q should cancel or reject.
+				 *     - Left click will record a new line segment.
+				 */
 				e.preventDefault(); e.stopPropagation();
 			});
 
@@ -758,7 +766,7 @@ class Inspector {
 		// End of node rendering.
 		ctx.restore();
 
-		// --- Debug SDF ---
+		// --- Debug visualize node SDF hitbox ---
 		/*
 		let pocNode = null;
 		if (this.activeNet && this.activeNet.nodes) {
