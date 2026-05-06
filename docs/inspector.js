@@ -10,8 +10,14 @@ class Inspector {
     static CURSOR_PROJECTED_COLOR = '#3b82f6dd';
     static NON_INTERACTABLE_NODE_WHITE = '#eeeeeedd';
 
+    static TRACE_PRIMARY_COLOR = '#f5610bcc';
+    static TRACE_PROJECTED_COLOR = '#3b82f644';
+    static ACTIVE_TRACE_COLOR = '#10b981dd';
+
     static MARKER_S = 40;
     static MARKER_R = 18;
+
+    static TRACE_DEFAULT_WIDTH = 16;
 
     async getImageResolution(img) {
         if (!img || !img.blob) return { w: 0, h: 0 };
@@ -37,29 +43,32 @@ class Inspector {
         this.viewers = {};
         this.visibleIds = new Set();
         this.activeNet = null;
+        this.activeTrace = null; // The trace currently being edited.
         this.masterId = null;
+
         this.projectedNetNodeCache = {}; // Cache for calculated node positions
         this.inactiveNetCache = {}; // Cache for all nets except the active one
         this.bomCache = {}; // Cache for projected BOM coordinates
+        this.traceCache = {}; // Render cache for all traces except the one being edited.
 
         // Cache for image dimensions to avoid async bitmap creation on every render
         this.resolutionCache = {};
 
         // Compile canvas shapes ahead of time.
-        let node_marker = new Path2D();
+        let nodeMarker = new Path2D();
         {
             const s = Inspector.MARKER_S, r = Inspector.MARKER_R;
-            node_marker.moveTo(0, 0);
-            node_marker.lineTo(0, -s + r);
-            node_marker.arcTo(0, -s, s, -s, r);
-            node_marker.lineTo(s - r, -s);
-            node_marker.arcTo(s, -s, s, 0, r);
-            node_marker.lineTo(s, -r);
-            node_marker.arcTo(s, 0, 0, 0, r);
-            node_marker.closePath();
+            nodeMarker.moveTo(0, 0);
+            nodeMarker.lineTo(0, -s + r);
+            nodeMarker.arcTo(0, -s, s, -s, r);
+            nodeMarker.lineTo(s - r, -s);
+            nodeMarker.arcTo(s, -s, s, 0, r);
+            nodeMarker.lineTo(s, -r);
+            nodeMarker.arcTo(s, 0, 0, 0, r);
+            nodeMarker.closePath();
         }
         this.canvasShapes = {
-            nodeMarker: node_marker,
+            nodeMarker: nodeMarker,
         };
 
         // Initialization State Lock
@@ -198,6 +207,7 @@ class Inspector {
         }
 
         this.updateNetUI();
+        this.updateTraceUI();
         await this.renderGrid();
     }
 
@@ -298,6 +308,10 @@ class Inspector {
     };
 
     async syncCursors(masterId, mx, my, forceRefresh = false) {
+        if (this.activeTrace && masterId !== this.activeTrace.imgId) {
+            this.cancelTrace();
+        }
+
         if (mx !== null && my !== null) {
             this.cursorState = { masterId, mx, my };
         } else if (!forceRefresh && !this.cursorState) {
@@ -372,12 +386,12 @@ class Inspector {
     async updateInactiveNetNodeCache() {
         // Fetch all nets and filter in memory.
         const allNets = await this.db.getNets();
-        const active_net_id = this.activeNet ? this.activeNet.id : null;
-        const inactiveNets = allNets.filter(n => n.projectId === currentBomId && n.id !== active_net_id);
+        const activeNetId = this.activeNet ? this.activeNet.id : null;
+        const inactiveNets = allNets.filter(n => n.projectId === currentBomId && n.id !== activeNetId);
 
-        const new_cache = {};
+        const newCache = {};
         for (const id of this.visibleIds) {
-            new_cache[id] = [];
+            newCache[id] = [];
         }
 
         // For each net:
@@ -386,12 +400,12 @@ class Inspector {
             for (const node of net.nodes) {
                 // If node.imgId is a visible layer, then add to cache.
                 if (this.visibleIds.has(node.imgId)) {
-                    new_cache[node.imgId].push({ x: node.x, y: node.y, orig: node });
+                    newCache[node.imgId].push({ x: node.x, y: node.y, orig: node });
                 }
             }
         }
 
-        this.inactiveNetCache = new_cache;
+        this.inactiveNetCache = newCache;
     }
 
     async updateProjectedNetNodeCache() {
@@ -401,15 +415,15 @@ class Inspector {
             return false;
         }
 
-        const new_cache = {};
-        const layer_paths = {};
+        const newCache = {};
+        const layerPaths = {};
 
         // For currently visible layers:
-        for (const vis_id of this.visibleIds) {
+        for (const visId of this.visibleIds) {
             // Initialize cache.
-            new_cache[vis_id] = [];
+            newCache[visId] = [];
             // Pre-calculate projections.
-            layer_paths[vis_id] = await ImageGraph.solvePaths(vis_id, this.cv, this.db);
+            layerPaths[visId] = await ImageGraph.solvePaths(visId, this.cv, this.db);
         }
 
         // This triggers whenever a new net is saved.
@@ -421,23 +435,71 @@ class Inspector {
 
         for (const node of this.activeNet.nodes) {
             // Inferred/Projected Nodes.
-            for (const p of layer_paths[node.imgId]) {
+            for (const p of layerPaths[node.imgId]) {
                 const proj = this.cv.projectPoint(node.x, node.y, p.H);
                 if (proj) {
-                    new_cache[p.id].push({
+                    newCache[p.id].push({
                         x: proj.x, y: proj.y, orig: node
                     });
                 }
             }
         }
 
-        // Update state and force a redraw.
-        this.projectedNetNodeCache = new_cache;
+        this.projectedNetNodeCache = newCache;
+        return true;
+    }
+    async updateProjectedNetNodeCacheAndRedraw() {
+        if (await this.updateProjectedNetNodeCache()) {
+            Object.values(this.viewers).forEach(v => v.draw());
+        }
+    }
+
+    async updateTraceCache() {
+        const newCache = {};
+        const layerPaths = {};
+
+        // For currently visible layers precalculate projection matrices.
+        for (const visId of this.visibleIds) {
+            newCache[visId] = [];
+            layerPaths[visId] = await ImageGraph.solvePaths(visId, this.cv, this.db);
+        }
+
+        // Load traces from database.
+        const allTraces = await this.db.getTraces();
+
+        /**
+         * NOTE: Each trace's `points` member is a set of vertices that define a line strip.
+         */
+        for (const trace of allTraces) {
+            // 1. Direct/Primary view:
+            newCache[trace.imgId].push({
+                points: trace.points,
+                isPrimary: true,
+                orig: trace
+            });
+            // 2. Projected views:
+            for (const p of layerPaths[trace.imgId]) {
+                const projPoints = [];
+                // projectPoint returns null when the matrice parameter is invalid or the projection is ill-defined.
+                trace.points.forEach(pt => {
+                    const proj = this.cv.projectPoint(pt.x, pt.y, p.H);
+                    if (proj) projPoints.push(proj);
+                });
+                if (projPoints.length > 0) {
+                    newCache[p.id].push({
+                        points: projPoints, isPrimary: false, orig: trace
+                    });
+                }
+            }
+        }
+
+        this.traceCache = newCache;
+        // console.log(newCache);
         return true;
     }
 
-    async updateProjectedNetNodeCacheAndRedraw() {
-        if (await this.updateProjectedNetNodeCache()) {
+    async updateTraceCacheAndRedraw() {
+        if (await this.updateTraceCache()) {
             Object.values(this.viewers).forEach(v => v.draw());
         }
     }
@@ -541,7 +603,13 @@ class Inspector {
                 // Click handler.
                 async (x, y, e) => {
                     if (e.button !== 0) return;
-                    if (wasActiveBeforeDown) {
+                    if (this.activeTrace) {
+                        if (this.activeTrace.imgId === id) {
+                            this.appendTrace({ x: x, y: y });
+                        } else {
+                            this.cancelTrace();
+                        }
+                    } else if (wasActiveBeforeDown) {
                         const [hitNode, hitNodeIdx] = this.getInteractableNetNodeAt(id, x, y);
                         if (hitNode) {
                             const now = Date.now();
@@ -632,24 +700,46 @@ class Inspector {
             viewer.onResize = (w, h) => updateView();
 
             cvs.addEventListener('keydown', (e) => {
-                if (e.code == "KeyX" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat) {
-                    this.hideCrosshair(e);
-                    e.stopPropagation();
+                // No modifiers keys pressed:
+                if (!e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat) {
+                    // If we are in trace draw mode:
+                    if (this.activeTrace) {
+                        if (e.code === "KeyX" || e.code === "KeyQ" || e.code === "Escape") {
+                            // Cancel current trace.
+                            e.stopPropagation();
+                            this.cancelTrace();
+                        } else if (e.code === "Enter") {
+                            // Commit current trace.
+                            e.stopPropagation();
+                            let coords = null;
+                            if (this.cursorState && this.cursorState.masterId === this.activeTrace.imgId) {
+                                coords = { x: this.cursorState.mx, y: this.cursorState.my };
+                            }
+                            this.saveTrace(coords);
+                        }
+                    }
+                    else if (e.code === "KeyX") {
+                        this.hideCrosshair(e);
+                        e.stopPropagation();
+                    }
                 }
             });
 
             cvs.addEventListener('contextmenu', (e) => {
-                // TODO: Make this do something more useful than hiding the crosshair
-                //       like the ability to paintover/highlight the copper tracks.
+                const coords = viewer.getImgCoords(e.clientX, e.clientY);
                 /**
-                 * For each canvas/view/image/layer/whatever else it is called:
-                 *  - Array of line stips or array of array containing points.
-                 *    Add new and enter editing mode with right click:
-                 *     - Right finalizes the new line.
-                 *     - Escape or x or q should cancel or reject.
-                 *     - Left click will record a new line segment.
+                 * If currently drawing traces, register clicks
+                 * only if cursor in the starting canvas/view.
                  */
-                e.preventDefault(); e.stopPropagation();
+                if (this.activeTrace && this.activeTrace.imgId === id) {
+                    e.preventDefault(); e.stopPropagation();
+                    this.saveTrace(coords);
+                } else if (!this.activeTrace) {
+                    e.preventDefault(); e.stopPropagation();
+                    this.startTrace(id, coords);
+                } else {
+                    // console.log("Trace out of bounds - on another view!");
+                }
             });
 
             this.viewers[id] = viewer;
@@ -682,7 +772,45 @@ class Inspector {
 
         const isMirrored = viewer.isMirrored && viewer.bmp;
         const bmpWidth = isMirrored ? viewer.bmp.width : 0;
+
         const o = Inspector.MARKER_S / 2;
+
+        // Render committed traces.
+        if (this.traceCache[id]) {
+            ctx.save();
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            // Let the native code handle mirroring, as we don't have to deal with text, unlike with nodes.
+            if (isMirrored) {
+                ctx.translate(bmpWidth, 0);
+                ctx.scale(-1, 1);
+            }
+
+            for (const t of this.traceCache[id]) {
+                ctx.strokeStyle = t.isPrimary ? Inspector.TRACE_PRIMARY_COLOR : Inspector.TRACE_PROJECTED_COLOR;
+                ctx.fillStyle = ctx.strokeStyle;
+                const pts = t.points;
+                // TODO: DPI compensation.
+                const w = t.orig.width ? t.orig.width : Inspector.TRACE_DEFAULT_WIDTH;
+
+                // Draw line segments from line strip information.
+                if (pts.length > 1) {
+                    ctx.beginPath();
+                    ctx.lineWidth = w;
+                    ctx.moveTo(pts[0].x, pts[0].y);
+                    for (let i = 1; i < pts.length; i++) {
+                        ctx.lineTo(pts[i].x, pts[i].y);
+                    }
+                    ctx.stroke();
+                } else if (pts.length === 1) {
+                    ctx.beginPath();
+                    ctx.arc(pts[0].x, pts[0].y, w / 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+            ctx.restore();
+        }
 
         // Common draw parameters for all net nodes.
         ctx.save();
@@ -745,7 +873,7 @@ class Inspector {
         // Render active primary net nodes.
         if (this.activeNet && this.activeNet.nodes) {
             for (const n of this.activeNet.nodes) {
-                if (n.imgId == id) {
+                if (n.imgId === id) {
                     let drawX = isMirrored ? bmpWidth - n.x : n.x;
 
                     ctx.save();
@@ -787,11 +915,44 @@ class Inspector {
         // End of node rendering.
         ctx.restore();
 
+        // Draw new/active trace.
+        if (this.activeTrace && this.cursorState && this.activeTrace.imgId === id) {
+            // Retrieve current cursor position.
+            const cx = this.cursorState.mx;
+            const cy = this.cursorState.my;
+
+            ctx.save();
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            if (isMirrored) {
+                ctx.translate(bmpWidth, 0);
+                ctx.scale(-1, 1);
+            }
+
+            ctx.strokeStyle = Inspector.ACTIVE_TRACE_COLOR;
+            ctx.fillStyle = Inspector.ACTIVE_TRACE_COLOR;
+            const pts = this.activeTrace.points;
+            const w = this.activeTrace.width ? this.activeTrace.width : Inspector.TRACE_DEFAULT_WIDTH;
+
+            // Starting from the current cursor position, draw the line segments in reverse.
+            ctx.beginPath();
+            ctx.lineWidth = w;
+            ctx.moveTo(cx, cy);
+            for (let i = pts.length - 1; i >= 0; i--) {
+                ctx.lineTo(pts[i].x, pts[i].y);
+            }
+            ctx.stroke();
+
+            ctx.restore();
+        }
+
         { // Draw crosshairs.
-            let cx, cy, color = Inspector.CURSOR_MASTER_COLOR;
+            let cx, cy, color;
             if (this.cursorState && this.cursorState.masterId === id) {
                 cx = this.cursorState.mx; cy = this.cursorState.my;
                 if (isMirrored) cx = bmpWidth - cx;
+                color = Inspector.CURSOR_MASTER_COLOR;
             } else if (viewer.cursorPos) {
                 cx = viewer.cursorPos.x; cy = viewer.cursorPos.y;
                 if (isMirrored) cx = bmpWidth - cx;
@@ -1183,6 +1344,47 @@ class Inspector {
         this.updateInactiveNetNodeCache().then(() => {
             this.updateProjectedNetNodeCacheAndRedraw();
         });
+    }
+    // #endregion
+    // #region Trace Management
+    startTrace(imgId, firstPoint) {
+        if (this.activeTrace) {
+            return null;
+        }
+        this.activeTrace = {
+            id: uuid(), imgId: imgId, points: [firstPoint],
+            width: Inspector.TRACE_DEFAULT_WIDTH
+        };
+        this.updateTraceUI();
+        return this.activeTrace;
+    }
+    appendTrace(p) {
+        if (!this.activeTrace) {
+            return false;
+        }
+        this.activeTrace.points.push(p);
+        this.updateTraceUI();
+        return true;
+    }
+    async saveTrace(p) {
+        if (!this.activeTrace) {
+            return false;
+        }
+        if (p) {
+            this.activeTrace.points.push(p);
+        }
+        this.activeTrace.projectId = currentBomId;
+        await this.db.addTrace(this.activeTrace);
+        this.activeTrace = null;
+        this.updateTraceUI();
+        return true;
+    }
+    cancelTrace() {
+        this.activeTrace = null;
+        this.updateTraceUI();
+    }
+    updateTraceUI() {
+        return this.updateTraceCacheAndRedraw();
     }
     // #endregion
 }
