@@ -735,7 +735,7 @@ class Inspector {
                     if (e.button !== 0) return;
                     if (this.currentDrawing) {
                         if (this.currentDrawing.imgId === id) {
-                            this.appendDrawing({ x: x, y: y });
+                            this.saveDrawing({ x: x, y: y });
                         } else {
                             this.cancelDrawing();
                         }
@@ -833,7 +833,7 @@ class Inspector {
             cvs.addEventListener('keydown', (e) => {
                 // No modifiers keys pressed:
                 if (!e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat) {
-                    // If we are in drawing draw mode:
+                    // If we are in drawing mode:
                     if (this.currentDrawing) {
                         if (e.code === "KeyX" || e.code === "KeyQ" || e.code === "Escape") {
                             // Cancel current drawing.
@@ -847,6 +847,14 @@ class Inspector {
                                 coords = { x: this.cursorState.mx, y: this.cursorState.my };
                             }
                             this.saveDrawing(coords);
+                        }
+                    }
+                    else if (e.code === "Delete" || e.code === "Backspace") {
+                        const hoveredDrawing = this.getDrawingAt(id, this.cursorState.mx, this.cursorState.my, this.cursorState.masterId);
+                        if (hoveredDrawing) {
+                            // Delete currently hovered drawing.
+                            e.stopPropagation();
+                            this.deleteDrawing(hoveredDrawing);
                         }
                     }
                     else if (e.code === "KeyX") {
@@ -864,7 +872,7 @@ class Inspector {
                  */
                 if (this.currentDrawing && this.currentDrawing.imgId === id) {
                     e.preventDefault(); e.stopPropagation();
-                    this.saveDrawing(coords);
+                    this.appendDrawing(coords);
                 } else if (!this.currentDrawing) {
                     e.preventDefault(); e.stopPropagation();
                     this.startDrawing(id, coords);
@@ -901,12 +909,6 @@ class Inspector {
         const viewer = this.viewers[id];
         if (!viewer) return;
         const ik = 1 / k;
-
-		// Render generated PCB traces beneath the node labels.
-		if (this.traceRenderer && this.traceRenderCache[id]) {
-			const mirrorWidth = (viewer.isMirrored && viewer.bmp) ? viewer.bmp.width : 0;
-			this.traceRenderer.draw(ctx, this.traceRenderCache[id], k, mirrorWidth);
-		}
 
         const isMirrored = viewer.isMirrored && viewer.bmp;
         const bmpWidth = isMirrored ? viewer.bmp.width : 0;
@@ -948,6 +950,11 @@ class Inspector {
                 }
             }
             ctx.restore();
+        }
+
+        // Render generated PCB traces above drawings, but beneath the node labels.
+        if (this.traceRenderer && this.traceRenderCache[id]) {
+            this.traceRenderer.draw(ctx, this.traceRenderCache[id], k, bmpWidth);
         }
 
         // Common draw parameters for all net nodes.
@@ -1423,6 +1430,48 @@ class Inspector {
         return primaryTaken ? labelSecondary : labelPrimary;
     }
     // #endregion
+    // #region Drawing helpers
+    _getDistanceToSegment(p, a, b) {
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        if (dx === 0 && dy === 0) {
+            return Math.hypot(p.x - a.x, p.y - a.y);
+        }
+        const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy);
+        const clampedT = Math.max(0, Math.min(1, t));
+        const projX = a.x + clampedT * dx;
+        const projY = a.y + clampedT * dy;
+        return Math.hypot(p.x - projX, p.y - projY);
+    }
+    getDrawingAt(canvasId, x, y, filterId = null) {
+        if (!this.drawingsCache[canvasId]) return null;
+        let bestDrawing = null;
+        let minDistance = Infinity;
+        const margin = 3; // extra tolerance in image coordinates
+        for (const t of this.drawingsCache[canvasId]) {
+            if (filterId && t.orig.imgId !== filterId) {
+                continue;
+            }
+            const pts = t.points;
+            const w = t.orig.width ? t.orig.width : Inspector.DRAW_LINE_DEFAULT_WIDTH;
+            const threshold = w / 2 + margin;
+            let dist = Infinity;
+            if (pts.length > 1) {
+                for (let i = 0; i < pts.length - 1; i++) {
+                    const d = this._getDistanceToSegment({ x: x, y: y }, pts[i], pts[i + 1]);
+                    if (d < dist) dist = d;
+                }
+            } else if (pts.length === 1) {
+                dist = Math.hypot(x - pts[0].x, y - pts[0].y);
+            }
+            if (dist < threshold && dist < minDistance) {
+                minDistance = dist;
+                bestDrawing = t.orig;
+            }
+        }
+        return bestDrawing;
+    }
+    // #endregion
     // #region Net Management
     async loadNet(net) {
         // Wait for initialization to complete if triggered by switchView()
@@ -1522,6 +1571,10 @@ class Inspector {
     cancelDrawing() {
         this.currentDrawing = null;
         this.updateDrawings();
+    }
+    async deleteDrawing(o) {
+        await this.db.deleteDrawing(o.id);
+        await this.updateDrawingsCacheAndRedraw();
     }
     updateDrawings() {
         return this.updateDrawingsCacheAndRedraw();
