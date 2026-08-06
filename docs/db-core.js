@@ -45,8 +45,8 @@ window.PcbDbCore = {
 		if (!netsStore.indexNames.contains('projectId')) {
 			netsStore.createIndex('projectId', 'projectId', {unique: false});
 		} */
-		if (!d.objectStoreNames.contains('traces')) {
-			const ts = d.createObjectStore('traces', {keyPath: 'id'});
+		if (!d.objectStoreNames.contains('drawings')) {
+			const ts = d.createObjectStore('drawings', {keyPath: 'id'});
 		}
 
 		if (!d.objectStoreNames.contains('pinDirections')) {

@@ -16,14 +16,13 @@ class Inspector {
     static CURSOR_PROJECTED_COLOR = '#3b82f6dd';
     static NON_INTERACTABLE_NODE_WHITE = '#eeeeeedd';
 
-    static TRACE_PRIMARY_COLOR = '#f5610bcc';
-    static TRACE_PROJECTED_COLOR = '#3b82f644';
-    static ACTIVE_TRACE_COLOR = '#10b981dd';
+    static DRAW_LINE_DEFAULT_WIDTH = 16;
+    static DRAW_LINE_PRIMARY_COLOR = '#f5610bcc';
+    static DRAW_LINE_PROJECTED_COLOR = '#3b82f644';
+    static CURRENT_DRAW_LINE_COLOR = '#10b981dd';
 
     static MARKER_S = 40;
     static MARKER_R = 18;
-
-    static TRACE_DEFAULT_WIDTH = 16;
 
     async getImageResolution(img) {
         if (!img || !img.blob) return { w: 0, h: 0 };
@@ -49,13 +48,13 @@ class Inspector {
         this.viewers = {};
         this.visibleIds = new Set();
         this.activeNet = null;
-        this.activeTrace = null; // The trace currently being edited.
+        this.currentDrawing = null; // The drawing currently being edited.
         this.masterId = null;
 
         this.projectedNetNodeCache = {}; // Cache for calculated node positions
         this.inactiveNetCache = {}; // Cache for all nets except the active one
         this.bomCache = {}; // Cache for projected BOM coordinates
-        this.traceCache = {}; // Render cache for all traces except the one being edited.
+        this.drawingsCache = {}; // Render cache for all drawings except the one being edited.
 
         // Cache for image dimensions to avoid async bitmap creation on every render
         this.resolutionCache = {};
@@ -231,7 +230,8 @@ class Inspector {
         }
 
         this.updateNetUI();
-        this.updateTraceUI();
+        this.updateTraceRenderCache();
+        this.updateDrawings();
         await this.renderGrid();
     }
 
@@ -331,80 +331,98 @@ class Inspector {
         });
     };
 
-    async syncCursors(masterId, mx, my, forceRefresh = false) {
-        if (this.activeTrace && masterId !== this.activeTrace.imgId) {
-            this.cancelTrace();
+	/**
+	 * UI handler: toggle visibility of inactive net traces.
+	 * @param show whether inactive traces should be visible
+	 */
+	toggleInactiveTraces(show) {
+		this.showInactiveTraces = !!show;
+		this.updateTraceRenderCache();
+	}
+
+	/**
+	 * UI handler: invalidate the cache and re-route every net of the active
+	 * board with the PcbVisualizer WASM API.
+	 */
+	async recalcAllTraces() {
+		this.traceCache.invalidateAll();
+		await this.updateTraceRenderCache(true);
+	}
+
+	async syncCursors(masterId, mx, my, forceRefresh = false) {
+        if (this.currentDrawing && masterId !== this.currentDrawing.imgId) {
+            this.cancelDrawing();
         }
 
-        if (mx !== null && my !== null) {
-            this.cursorState = { masterId, mx, my };
-        } else if (!forceRefresh && !this.cursorState) {
-            return;
-        }
+		if (mx !== null && my !== null) {
+			this.cursorState = { masterId, mx, my };
+		} else if (!forceRefresh && !this.cursorState) {
+			return;
+		}
 
-        const path = await ImageGraph.solvePaths(masterId, this.cv, this.db);
-        const connectedIds = new Set(path.map(p => p.id));
-        connectedIds.add(masterId);
+		const path = await ImageGraph.solvePaths(masterId, this.cv, this.db);
+		const connectedIds = new Set(path.map(p => p.id));
+		connectedIds.add(masterId);
 
-        for (const [id, viewer] of Object.entries(this.viewers)) {
-            if (id === masterId) {
-                viewer.setDimmed(false);
-                viewer.draw();
-                continue;
-            }
+		for (const [id, viewer] of Object.entries(this.viewers)) {
+			if (id === masterId) {
+				viewer.setDimmed(false);
+				viewer.draw();
+				continue;
+			}
 
-            if (!connectedIds.has(id)) {
-                viewer.cursorPos = null;
-                viewer.setDimmed(true);
-                viewer.draw();
-                continue;
-            }
+			if (!connectedIds.has(id)) {
+				viewer.cursorPos = null;
+				viewer.setDimmed(true);
+				viewer.draw();
+				continue;
+			}
 
-            const targetPath = path.find(p => p.id === id);
+			const targetPath = path.find(p => p.id === id);
 
-            if (mx !== null && my !== null && targetPath) {
-                const pt = this.cv.projectPoint(mx, my, targetPath.H);
-                if (pt) {
-                    viewer.cursorPos = pt;
-                    const w = viewer.bmp ? viewer.bmp.width : 1000;
-                    const h = viewer.bmp ? viewer.bmp.height : 1000;
+			if (mx !== null && my !== null && targetPath) {
+				const pt = this.cv.projectPoint(mx, my, targetPath.H);
+				if (pt) {
+					viewer.cursorPos = pt;
+					const w = viewer.bmp ? viewer.bmp.width : 1000;
+					const h = viewer.bmp ? viewer.bmp.height : 1000;
 
-                    const inside = (pt.x >= 0 && pt.y >= 0 && pt.x <= w && pt.y <= h);
-                    viewer.setDimmed(!inside);
+					const inside = (pt.x >= 0 && pt.y >= 0 && pt.x <= w && pt.y <= h);
+					viewer.setDimmed(!inside);
 
-                    if (inside && viewer.bmp) {
-                        const k = viewer.t.k;
-                        const tx = viewer.t.x;
-                        const ty = viewer.t.y;
-                        const imgX = viewer.isMirrored ? (w - pt.x) : pt.x;
-                        const screenX = imgX * k + tx;
-                        const screenY = pt.y * k + ty;
-                        const cvsW = viewer.canvas.width;
-                        const cvsH = viewer.canvas.height;
-                        const padX = cvsW * 0.25;
-                        const padY = cvsH * 0.25;
+					if (inside && viewer.bmp) {
+						const k = viewer.t.k;
+						const tx = viewer.t.x;
+						const ty = viewer.t.y;
+						const imgX = viewer.isMirrored ? (w - pt.x) : pt.x;
+						const screenX = imgX * k + tx;
+						const screenY = pt.y * k + ty;
+						const cvsW = viewer.canvas.width;
+						const cvsH = viewer.canvas.height;
+						const padX = cvsW * 0.25;
+						const padY = cvsH * 0.25;
 
-                        let dx = 0, dy = 0;
-                        if (screenX > cvsW - padX) dx = (cvsW - padX) - screenX;
-                        else if (screenX < padX) dx = padX - screenX;
-                        if (screenY > cvsH - padY) dy = (cvsH - padY) - screenY;
-                        else if (screenY < padY) dy = padY - screenY;
+						let dx = 0, dy = 0;
+						if (screenX > cvsW - padX) dx = (cvsW - padX) - screenX;
+						else if (screenX < padX) dx = padX - screenX;
+						if (screenY > cvsH - padY) dy = (cvsH - padY) - screenY;
+						else if (screenY < padY) dy = padY - screenY;
 
-                        if (dx !== 0 || dy !== 0) {
-                            viewer.t.x += dx;
-                            viewer.t.y += dy;
-                        }
-                    }
-                } else {
-                    viewer.cursorPos = null;
-                    viewer.setDimmed(true);
-                }
-            } else {
-                viewer.setDimmed(false);
-            }
-            viewer.draw();
-        }
-    }
+						if (dx !== 0 || dy !== 0) {
+							viewer.t.x += dx;
+							viewer.t.y += dy;
+						}
+					}
+				} else {
+					viewer.cursorPos = null;
+					viewer.setDimmed(true);
+				}
+			} else {
+				viewer.setDimmed(false);
+			}
+			viewer.draw();
+		}
+	}
     // #endregion
     // #region Render Cache Management
     async updateInactiveNetNodeCache() {
@@ -478,7 +496,7 @@ class Inspector {
         }
     }
 
-    async updateTraceCache() {
+    async updateDrawingsCache() {
         const newCache = {};
         const layerPaths = {};
 
@@ -488,45 +506,133 @@ class Inspector {
             layerPaths[visId] = await ImageGraph.solvePaths(visId, this.cv, this.db);
         }
 
-        // Load traces from database.
-        const allTraces = await this.db.getTraces();
+        // Load drawings from database.
+        const allDrawings = await this.db.getDrawings();
 
         /**
          * NOTE: Each trace's `points` member is a set of vertices that define a line strip.
          */
-        for (const trace of allTraces) {
+        for (const drawing of allDrawings) {
             // 1. Direct/Primary view:
-            newCache[trace.imgId].push({
-                points: trace.points,
+            newCache[drawing.imgId].push({
+                points: drawing.points,
                 isPrimary: true,
-                orig: trace
+                orig: drawing
             });
             // 2. Projected views:
-            for (const p of layerPaths[trace.imgId]) {
+            for (const p of layerPaths[drawing.imgId]) {
                 const projPoints = [];
                 // projectPoint returns null when the matrice parameter is invalid or the projection is ill-defined.
-                trace.points.forEach(pt => {
+                drawing.points.forEach(pt => {
                     const proj = this.cv.projectPoint(pt.x, pt.y, p.H);
                     if (proj) projPoints.push(proj);
                 });
                 if (projPoints.length > 0) {
                     newCache[p.id].push({
-                        points: projPoints, isPrimary: false, orig: trace
+                        points: projPoints, isPrimary: false, orig: drawing
                     });
                 }
             }
         }
 
-        this.traceCache = newCache;
+        this.drawingsCache = newCache;
         // console.log(newCache);
         return true;
     }
-
-    async updateTraceCacheAndRedraw() {
-        if (await this.updateTraceCache()) {
+    async updateDrawingsCacheAndRedraw() {
+        if (await this.updateDrawingsCache()) {
             Object.values(this.viewers).forEach(v => v.draw());
         }
     }
+
+    /**
+	 * Collect the nets of the current board, substituting the live (possibly
+	 * unsaved) active net so the Inspect view never shows stale geometry.
+	 * @returns Promise<Array> net records
+	 */
+	async _collectNets() {
+		const all = await this.db.getNets();
+		let nets = all.filter(n => n.projectId === currentBomId);
+		if (this.activeNet) {
+			nets = nets.filter(n => n.id !== this.activeNet.id);
+			nets.push(this.activeNet);
+		}
+		return nets;
+	}
+	/**
+	 * Pick a stable reference image (top-most) for the routed coordinate space.
+	 * @returns string|null image id
+	 */
+	_traceReferenceId() {
+		if (typeof bomImages === 'undefined' || !bomImages.length) return null;
+		const sorted = [...bomImages].sort((a, b) => {
+			const nA = a.name.toLowerCase(), nB = b.name.toLowerCase();
+			if (nA.includes('top')) return -1;
+			if (nB.includes('top')) return 1;
+			return nA.localeCompare(nB);
+		});
+		return sorted[0].id;
+	}
+	/**
+	 * Recompute the per-image trace draw lists from the (cached) routed traces.
+	 *
+	 * Traces are routed only once per change set via the PcbVisualizer WASM API
+	 * and stored in this.traceCache (reference-image space). Here we merely reuse
+	 * the existing perspective transform to project them onto each visible view —
+	 * no per-view recalculation of routing occurs.
+	 * @param forceAll force a full re-route of every net (cache invalidation)
+	 */
+	async updateTraceRenderCache(forceAll = false) {
+		this.traceRenderCache = {};
+		if (typeof currentBomId === 'undefined' || !currentBomId) return;
+		if (typeof ImageGraph === 'undefined') return;
+
+		const refId = this._traceReferenceId();
+		if (!refId) return;
+		this.traceRefId = refId;
+
+		const nets = await this._collectNets();
+
+		// One Dijkstra solve gives both directions (via inverse) for every image.
+		const refPaths = await ImageGraph.solvePaths(refId, this.cv, this.db);
+		const fwd = {}; // refId → id
+		const inv = {}; // id → refId
+		refPaths.forEach(p => {
+			fwd[p.id] = p.H;
+			const iH = ImageGraph.invertH(p.H);
+			if (iH) inv[p.id] = iH;
+		});
+
+		const projectNodeToRef = (node) => {
+			if (node.imgId === refId) return { x: node.x, y: node.y };
+			const H = inv[node.imgId];
+			if (!H) return null;
+			return this.cv.projectPoint(node.x, node.y, H);
+		};
+
+		try {
+			await this.traceCache.ensure(nets, refId, projectNodeToRef, forceAll || this._forceTraceRecalc);
+		} catch (e) {
+			console.error('[Inspector] trace routing failed', e);
+		}
+		this._forceTraceRecalc = false;
+
+		const activeId = this.activeNet ? this.activeNet.id : null;
+		for (const id of this.visibleIds) {
+			let projectPointFn;
+			if (id === refId) {
+				projectPointFn = (pt) => pt;
+			} else {
+				const H = fwd[id];
+				if (!H) { this.traceRenderCache[id] = []; continue; }
+				projectPointFn = (pt) => this.cv.projectPoint(pt.x, pt.y, H);
+			}
+			this.traceRenderCache[id] = this.traceRenderer.buildDrawList(
+				nets, activeId, this.showInactiveTraces, projectPointFn);
+		}
+
+		Object.values(this.viewers).forEach(v => v.draw());
+	}
     // #endregion
     // #region Rendering & Grid Management
     async renderGrid() {
@@ -627,11 +733,11 @@ class Inspector {
                 // Click handler.
                 async (x, y, e) => {
                     if (e.button !== 0) return;
-                    if (this.activeTrace) {
-                        if (this.activeTrace.imgId === id) {
-                            this.appendTrace({ x: x, y: y });
+                    if (this.currentDrawing) {
+                        if (this.currentDrawing.imgId === id) {
+                            this.appendDrawing({ x: x, y: y });
                         } else {
-                            this.cancelTrace();
+                            this.cancelDrawing();
                         }
                     } else if (wasActiveBeforeDown) {
                         const [hitNode, hitNodeIdx] = this.getInteractableNetNodeAt(id, x, y);
@@ -727,20 +833,20 @@ class Inspector {
             cvs.addEventListener('keydown', (e) => {
                 // No modifiers keys pressed:
                 if (!e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat) {
-                    // If we are in trace draw mode:
-                    if (this.activeTrace) {
+                    // If we are in drawing draw mode:
+                    if (this.currentDrawing) {
                         if (e.code === "KeyX" || e.code === "KeyQ" || e.code === "Escape") {
-                            // Cancel current trace.
+                            // Cancel current drawing.
                             e.stopPropagation();
-                            this.cancelTrace();
+                            this.cancelDrawing();
                         } else if (e.code === "Enter") {
-                            // Commit current trace.
+                            // Commit current drawing.
                             e.stopPropagation();
                             let coords = null;
-                            if (this.cursorState && this.cursorState.masterId === this.activeTrace.imgId) {
+                            if (this.cursorState && this.cursorState.masterId === this.currentDrawing.imgId) {
                                 coords = { x: this.cursorState.mx, y: this.cursorState.my };
                             }
-                            this.saveTrace(coords);
+                            this.saveDrawing(coords);
                         }
                     }
                     else if (e.code === "KeyX") {
@@ -753,17 +859,17 @@ class Inspector {
             cvs.addEventListener('contextmenu', (e) => {
                 const coords = viewer.getImgCoords(e.clientX, e.clientY);
                 /**
-                 * If currently drawing traces, register clicks
+                 * If currently drawing, register clicks
                  * only if cursor in the starting canvas/view.
                  */
-                if (this.activeTrace && this.activeTrace.imgId === id) {
+                if (this.currentDrawing && this.currentDrawing.imgId === id) {
                     e.preventDefault(); e.stopPropagation();
-                    this.saveTrace(coords);
-                } else if (!this.activeTrace) {
+                    this.saveDrawing(coords);
+                } else if (!this.currentDrawing) {
                     e.preventDefault(); e.stopPropagation();
-                    this.startTrace(id, coords);
+                    this.startDrawing(id, coords);
                 } else {
-                    // console.log("Trace out of bounds - on another view!");
+                    // console.log("Drawing out of bounds - on another view!");
                 }
             });
 
@@ -783,342 +889,11 @@ class Inspector {
         // Prepare render cache.
         this.updateInactiveNetNodeCache();
         this.updateProjectedNetNodeCache();
-        // Initialize crosshair to default state.
-        if (this.masterId) {
-            this.viewers[this.masterId].canvas.focus();
-            this.syncCursors(this.masterId, null, null, true);
-        }
-    }
-		// Prepare render cache.
-		this.updateAllNetNodeCache();
-		this.updateProjectedNetNodeCache();
-		// Initialize .
 		this.updateTraceRenderCache();
+        // Initialize crosshair to default state.
 		if (this.masterId) {
 			this.viewers[this.masterId].canvas.focus();
 			this.syncCursors(this.masterId, null, null, true);
-		}
-	}
-
-	async handleNodeClick(imgId, hitNode, hitNodeIdx) {
-		const res = await requestInput("Edit Node", "Node Name", hitNode.label, {
-			extraBtn: { label: 'Delete', value: '__DELETE__', class: 'danger' },
-			helpHtml: (typeof PIN_HELP_HTML !== 'undefined') ? PIN_HELP_HTML : null,
-				validate: validateNetName,
-				validateArgs: this.activeNet ? [this.activeNet.id] : null
-		});
-		if (res === '__DELETE__') {
-			this.activeNet.nodes.splice(hitNodeIdx, 1);
-		} else if (res) {
-			hitNode.label = res;
-		}
-		if (res) {
-			this.updateNetUI();
-			Object.values(this.viewers).forEach(v => v.draw());
-		}
-	}
-
-	toggleLayer(id, isVisible) {
-		if (isVisible) this.visibleIds.add(id);
-		else this.visibleIds.delete(id);
-		this.renderGrid();
-	}
-
-	async loadNet(net) {
-		// Wait for initialization to complete if triggered by switchView()
-		if (this.initPromise) {
-			await this.initPromise;
-		}
-
-		this.activeNet = JSON.parse(JSON.stringify(net));
-		this.updateNetUI();
-
-		if (Object.keys(this.viewers).length === 0) {
-			await this.renderGrid();
-		} else {
-			Object.values(this.viewers).forEach(v => v.draw());
-		}
-	}
-
-	async updateAllNetNodeCache() {
-		// Fetch all nets and filter in memory.
-		const allNets = await this.db.getNets();
-		const active_net_id = this.activeNet ? this.activeNet.id : null;
-		const inactiveNets = allNets.filter(n => n.projectId === currentBomId && n.id !== active_net_id);
-
-		const new_cache = {};
-		for (const id of this.visibleIds) {
-			new_cache[id] = [];
-		}
-
-		// For each net:
-		for (const net of inactiveNets) {
-			// For each node in the current net:
-			for (const node of net.nodes) {
-				// If node.imgId is a visible layer, then add to cache.
-				if (this.visibleIds.has(node.imgId)) {
-					new_cache[node.imgId].push({ x: node.x, y: node.y, orig: node });
-				}
-			}
-		}
-
-		this.inactiveNetCache = new_cache;
-	}
-
-	async updateProjectedNetNodeCache() {
-		// Reset net node render state and skip work if no actual nodes exist.
-		if (!this.activeNet || !this.activeNet.nodes) {
-			this.projectedNetNodeCache = {};
-			return false;
-		}
-
-		const new_cache = {};
-		const layer_paths = {};
-
-		// For currently visible layers:
-		for (const vis_id of this.visibleIds) {
-			// Initialize cache.
-			new_cache[vis_id] = [];
-			// Pre-calculate projections.
-			layer_paths[vis_id] = await ImageGraph.solvePaths(vis_id, this.cv, this.db);
-		}
-
-		for (const node of this.activeNet.nodes) {
-			// Inferred/Projected Nodes.
-			for (const p of layer_paths[node.imgId]) {
-				const proj = this.cv.projectPoint(node.x, node.y, p.H);
-				if (proj) {
-					new_cache[p.id].push({
-						x: proj.x, y: proj.y, orig: node
-					});
-				}
-			}
-		}
-
-		// Update state and force a redraw.
-		this.projectedNetNodeCache = new_cache;
-		// TODO: Beware of double redraws!
-		Object.values(this.viewers).forEach(v => v.draw());
-	}
-
-	async updateProjectedNetNodeCache() {
-		// Reset net node render state and skip work if no actual nodes exist.
-		if (!this.activeNet || !this.activeNet.nodes) {
-			this.projectedNetNodeCache = {};
-			return false;
-		}
-
-		const new_cache = {};
-		const layer_paths = {};
-
-		// For currently visible layers:
-		for (const vis_id of this.visibleIds) {
-			// Initialize cache.
-			new_cache[vis_id] = [];
-			// Pre-calculate projections.
-			layer_paths[vis_id] = await ImageGraph.solvePaths(vis_id, this.cv, this.db);
-		}
-
-		for (const node of this.activeNet.nodes) {
-			// Inferred/Projected Nodes.
-			for (const p of layer_paths[node.imgId]) {
-				const proj = this.cv.projectPoint(node.x, node.y, p.H);
-				if (proj) {
-					new_cache[p.id].push({
-						x: proj.x, y: proj.y, orig: node
-					});
-				}
-			}
-		}
-
-		// Update state and force a redraw.
-		this.projectedNetNodeCache = new_cache;
-		return true;
-	}
-
-	async updateProjectedNetNodeCacheAndRedraw() {
-		if (await this.updateProjectedNetNodeCache()) {
-			Object.values(this.viewers).forEach(v => v.draw());
-		}
-	}
-
-	/**
-	 * Recompute the per-image trace draw lists from the (cached) routed traces.
-	 *
-	 * Traces are routed only once per change set via the PcbVisualizer WASM API
-	 * and stored in this.traceCache (reference-image space). Here we merely reuse
-	 * the existing perspective transform to project them onto each visible view —
-	 * no per-view recalculation of routing occurs.
-	 * @param forceAll force a full re-route of every net (cache invalidation)
-	 */
-	async updateTraceRenderCache(forceAll = false) {
-		this.traceRenderCache = {};
-		if (typeof currentBomId === 'undefined' || !currentBomId) return;
-		if (typeof ImageGraph === 'undefined') return;
-
-		const refId = this._traceReferenceId();
-		if (!refId) return;
-		this.traceRefId = refId;
-
-		const nets = await this._collectNets();
-
-		// One Dijkstra solve gives both directions (via inverse) for every image.
-		const refPaths = await ImageGraph.solvePaths(refId, this.cv, this.db);
-		const fwd = {}; // refId → id
-		const inv = {}; // id → refId
-		refPaths.forEach(p => {
-			fwd[p.id] = p.H;
-			const iH = ImageGraph.invertH(p.H);
-			if (iH) inv[p.id] = iH;
-		});
-
-		const projectNodeToRef = (node) => {
-			if (node.imgId === refId) return { x: node.x, y: node.y };
-			const H = inv[node.imgId];
-			if (!H) return null;
-			return this.cv.projectPoint(node.x, node.y, H);
-		};
-
-		try {
-			await this.traceCache.ensure(nets, refId, projectNodeToRef, forceAll || this._forceTraceRecalc);
-		} catch (e) {
-			console.error('[Inspector] trace routing failed', e);
-		}
-		this._forceTraceRecalc = false;
-
-		const activeId = this.activeNet ? this.activeNet.id : null;
-		for (const id of this.visibleIds) {
-			let projectPointFn;
-			if (id === refId) {
-				projectPointFn = (pt) => pt;
-			} else {
-				const H = fwd[id];
-				if (!H) { this.traceRenderCache[id] = []; continue; }
-				projectPointFn = (pt) => this.cv.projectPoint(pt.x, pt.y, H);
-			}
-			this.traceRenderCache[id] = this.traceRenderer.buildDrawList(
-				nets, activeId, this.showInactiveTraces, projectPointFn);
-		}
-
-		Object.values(this.viewers).forEach(v => v.draw());
-	}
-
-	/**
-	 * Collect the nets of the current board, substituting the live (possibly
-	 * unsaved) active net so the Inspect view never shows stale geometry.
-	 * @returns Promise<Array> net records
-	 */
-	async _collectNets() {
-		const all = await this.db.getNets();
-		let nets = all.filter(n => n.projectId === currentBomId);
-		if (this.activeNet) {
-			nets = nets.filter(n => n.id !== this.activeNet.id);
-			nets.push(this.activeNet);
-		}
-		return nets;
-	}
-
-	/**
-	 * Pick a stable reference image (top-most) for the routed coordinate space.
-	 * @returns string|null image id
-	 */
-	_traceReferenceId() {
-		if (typeof bomImages === 'undefined' || !bomImages.length) return null;
-		const sorted = [...bomImages].sort((a, b) => {
-			const nA = a.name.toLowerCase(), nB = b.name.toLowerCase();
-			if (nA.includes('top')) return -1;
-			if (nB.includes('top')) return 1;
-			return nA.localeCompare(nB);
-		});
-		return sorted[0].id;
-	}
-
-	/**
-	 * UI handler: toggle visibility of inactive net traces.
-	 * @param show whether inactive traces should be visible
-	 */
-	toggleInactiveTraces(show) {
-		this.showInactiveTraces = !!show;
-		this.updateTraceRenderCache();
-	}
-
-	/**
-	 * UI handler: invalidate the cache and re-route every net of the active
-	 * board with the PcbVisualizer WASM API.
-	 */
-	async recalcAllTraces() {
-		this.traceCache.invalidateAll();
-		await this.updateTraceRenderCache(true);
-	}
-
-	async syncCursors(masterId, mx, my, forceRefresh = false) {
-		if (mx !== null && my !== null) {
-			this.cursorState = { masterId, mx, my };
-		} else if (!forceRefresh && !this.cursorState) {
-			return;
-		}
-
-		const path = await ImageGraph.solvePaths(masterId, this.cv, this.db);
-		const connectedIds = new Set(path.map(p => p.id));
-		connectedIds.add(masterId);
-
-		for (const [id, viewer] of Object.entries(this.viewers)) {
-			if (id === masterId) {
-				viewer.setDimmed(false);
-				viewer.draw();
-				continue;
-			}
-
-			if (!connectedIds.has(id)) {
-				viewer.cursorPos = null;
-				viewer.setDimmed(true);
-				viewer.draw();
-				continue;
-			}
-
-			const targetPath = path.find(p => p.id === id);
-
-			if (mx !== null && my !== null && targetPath) {
-				const pt = this.cv.projectPoint(mx, my, targetPath.H);
-				if (pt) {
-					viewer.cursorPos = pt;
-					const w = viewer.bmp ? viewer.bmp.width : 1000;
-					const h = viewer.bmp ? viewer.bmp.height : 1000;
-
-					const inside = (pt.x >= 0 && pt.y >= 0 && pt.x <= w && pt.y <= h);
-					viewer.setDimmed(!inside);
-
-					if (inside && viewer.bmp) {
-						const k = viewer.t.k;
-						const tx = viewer.t.x;
-						const ty = viewer.t.y;
-						const imgX = viewer.isMirrored ? (w - pt.x) : pt.x;
-						const screenX = imgX * k + tx;
-						const screenY = pt.y * k + ty;
-						const cvsW = viewer.canvas.width;
-						const cvsH = viewer.canvas.height;
-						const padX = cvsW * 0.25;
-						const padY = cvsH * 0.25;
-
-						let dx = 0, dy = 0;
-						if (screenX > cvsW - padX) dx = (cvsW - padX) - screenX;
-						else if (screenX < padX) dx = padX - screenX;
-						if (screenY > cvsH - padY) dy = (cvsH - padY) - screenY;
-						else if (screenY < padY) dy = padY - screenY;
-
-						if (dx !== 0 || dy !== 0) {
-							viewer.t.x += dx;
-							viewer.t.y += dy;
-						}
-					}
-				} else {
-					viewer.cursorPos = null;
-					viewer.setDimmed(true);
-				}
-			} else {
-				viewer.setDimmed(false);
-			}
-			viewer.draw();
 		}
 	}
 
@@ -1138,8 +913,8 @@ class Inspector {
 
         const o = Inspector.MARKER_S / 2;
 
-        // Render committed traces.
-        if (this.traceCache[id]) {
+        // Render committed drawings.
+        if (this.drawingsCache[id]) {
             ctx.save();
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
@@ -1150,12 +925,12 @@ class Inspector {
                 ctx.scale(-1, 1);
             }
 
-            for (const t of this.traceCache[id]) {
-                ctx.strokeStyle = t.isPrimary ? Inspector.TRACE_PRIMARY_COLOR : Inspector.TRACE_PROJECTED_COLOR;
+            for (const t of this.drawingsCache[id]) {
+                ctx.strokeStyle = t.isPrimary ? Inspector.DRAW_LINE_PRIMARY_COLOR : Inspector.DRAW_LINE_PROJECTED_COLOR;
                 ctx.fillStyle = ctx.strokeStyle;
                 const pts = t.points;
                 // TODO: DPI compensation.
-                const w = t.orig.width ? t.orig.width : Inspector.TRACE_DEFAULT_WIDTH;
+                const w = t.orig.width ? t.orig.width : Inspector.DRAW_LINE_DEFAULT_WIDTH;
 
                 // Draw line segments from line strip information.
                 if (pts.length > 1) {
@@ -1278,8 +1053,8 @@ class Inspector {
         // End of node rendering.
         ctx.restore();
 
-        // Draw new/active trace.
-        if (this.activeTrace && this.cursorState && this.activeTrace.imgId === id) {
+        // Draw current drawing.
+        if (this.currentDrawing && this.cursorState && this.currentDrawing.imgId === id) {
             // Retrieve current cursor position.
             const cx = this.cursorState.mx;
             const cy = this.cursorState.my;
@@ -1293,10 +1068,10 @@ class Inspector {
                 ctx.scale(-1, 1);
             }
 
-            ctx.strokeStyle = Inspector.ACTIVE_TRACE_COLOR;
-            ctx.fillStyle = Inspector.ACTIVE_TRACE_COLOR;
-            const pts = this.activeTrace.points;
-            const w = this.activeTrace.width ? this.activeTrace.width : Inspector.TRACE_DEFAULT_WIDTH;
+            ctx.strokeStyle = Inspector.CURRENT_DRAW_LINE_COLOR;
+            ctx.fillStyle = Inspector.CURRENT_DRAW_LINE_COLOR;
+            const pts = this.currentDrawing.points;
+            const w = this.currentDrawing.width ? this.currentDrawing.width : Inspector.DRAW_LINE_DEFAULT_WIDTH;
 
             // Starting from the current cursor position, draw the line segments in reverse.
             ctx.beginPath();
@@ -1710,45 +1485,46 @@ class Inspector {
 		this.updateTraceRenderCache();
     }
     // #endregion
-    // #region Trace Management
-    startTrace(imgId, firstPoint) {
-        if (this.activeTrace) {
+    // #region Drawing Management
+    // Currently only line segments are supported.
+    startDrawing(imgId, firstPoint) {
+        if (this.currentDrawing) {
             return null;
         }
-        this.activeTrace = {
+        this.currentDrawing = {
             id: uuid(), imgId: imgId, points: [firstPoint],
-            width: Inspector.TRACE_DEFAULT_WIDTH
+            width: Inspector.DRAW_LINE_DEFAULT_WIDTH
         };
-        this.updateTraceUI();
-        return this.activeTrace;
+        this.updateDrawings();
+        return this.currentDrawing;
     }
-    appendTrace(p) {
-        if (!this.activeTrace) {
+    appendDrawing(p) {
+        if (!this.currentDrawing) {
             return false;
         }
-        this.activeTrace.points.push(p);
-        this.updateTraceUI();
+        this.currentDrawing.points.push(p);
+        this.updateDrawings();
         return true;
     }
-    async saveTrace(p) {
-        if (!this.activeTrace) {
+    async saveDrawing(p) {
+        if (!this.currentDrawing) {
             return false;
         }
         if (p) {
-            this.activeTrace.points.push(p);
+            this.currentDrawing.points.push(p);
         }
-        this.activeTrace.projectId = currentBomId;
-        await this.db.addTrace(this.activeTrace);
-        this.activeTrace = null;
-        this.updateTraceUI();
+        this.currentDrawing.projectId = currentBomId;
+        await this.db.addDrawing(this.currentDrawing);
+        this.currentDrawing = null;
+        this.updateDrawings();
         return true;
     }
-    cancelTrace() {
-        this.activeTrace = null;
-        this.updateTraceUI();
+    cancelDrawing() {
+        this.currentDrawing = null;
+        this.updateDrawings();
     }
-    updateTraceUI() {
-        return this.updateTraceCacheAndRedraw();
+    updateDrawings() {
+        return this.updateDrawingsCacheAndRedraw();
     }
     // #endregion
 }

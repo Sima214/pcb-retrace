@@ -73,9 +73,9 @@ class PcbDatabase {
 	async deleteNet(id) { return this._tx('nets', 'readwrite', s => s.delete(id)); }
 
 	// Inspector Drawing Extensions
-	async getTraces() { return this._tx('traces', 'readonly', s => s.getAll()); }
-	async addTrace(trace) { return this._tx('traces', 'readwrite', s => s.put(trace)); }
-	async deleteTrace(id) { return this._tx('traces', 'readwrite', s => s.delete(id)); }
+	async getDrawings() { return this._tx('drawings', 'readonly', s => s.getAll()); }
+	async addDrawing(drawing) { return this._tx('drawings', 'readwrite', s => s.put(drawing)); }
+	async deleteDrawing(id) { return this._tx('drawings', 'readwrite', s => s.delete(id)); }
 
 	// POI Extensions
 	async addOverlap(ov) { return this._tx('overlappedImages', 'readwrite', s => s.put(ov)); }
@@ -613,10 +613,11 @@ async function exportDeviceZIP() {
 	if (pass === null) return; // cancelled
 
 	const { BlobWriter, BlobReader, TextReader, ZipWriter } = zip;
+
 	const dev = deviceList.find(d => d.id === currentDeviceId);
 	const boms = await db.getProjectsByDevice(currentDeviceId);
 	const allNets = await db.getNets();
-	const allTraces = await db.getTraces();
+	const allDrawings = await db.getDrawings();
 	const allSchemas = await db.getSchemas();
 	const allSchemaComps = await db.getSchemaComponents();
 
@@ -655,10 +656,11 @@ ${encNote}
 	for (const bom of boms) {
 		const comps = await db.getComponents(bom.id);
 		const imgs	= await db.getImages(bom.id);
-		const boardNets		  = allNets.filter(n => n.projectId === bom.id);
-		const boardTraces = allTraces.filter(t => t.projectId === bom.id);
-		const boardSchemas	  = allSchemas.filter(s => s.boardId === bom.id);
-		const boardSchemaIds  = new Set(boardSchemas.map(s => s.id));
+
+		const boardNets = allNets.filter(n => n.projectId === bom.id);
+		const boardDrawings = allDrawings.filter(t => t.projectId === bom.id);
+		const boardSchemas = allSchemas.filter(s => s.boardId === bom.id);
+		const boardSchemaIds = new Set(boardSchemas.map(s => s.id));
 		const boardSchemaComps = allSchemaComps.filter(sc => boardSchemaIds.has(sc.schemaId));
 
 		const overlapsMap = new Map();
@@ -673,7 +675,7 @@ ${encNote}
 			images: imgs.map(img => ({ id: img.id, name: img.name, type: 'image/jpeg' })),
 			overlaps: Array.from(overlapsMap.values()),
 			nets: boardNets,
-			traces: boardTraces,
+			drawings: boardDrawings,
 			schemas: boardSchemas,
 			schemaComponents: boardSchemaComps
 		});
@@ -1030,12 +1032,12 @@ async function restoreDevice(manifest, imageMap) {
 				if (!importNetIds.has(ln.id)) await db.deleteNet(ln.id);
 			}
 
-			// 5. Prune Traces
-			const allTraces = await db.getTraces();
-			const localTraces = allTraces.filter(t => t.projectId === boardId);
-			const importTraceIds = new Set((boardData.traces || []).map(t => t.id));
-			for (const lt of localTraces) {
-				if (!importTraceIds.has(lt.id)) await db.deleteTrace(lt.id);
+			// 5. Prune board drawings
+			const allDrawings = await db.getDrawings();
+			const localDrawings = allDrawings.filter(t => t.projectId === boardId);
+			const importDrawingIds = new Set((boardData.drawings || []).map(t => t.id));
+			for (const lt of localDrawings) {
+				if (!importDrawingIds.has(lt.id)) await db.deleteDrawing(lt.id);
 			}
 
 			// 6. Prune Schemas
@@ -1106,16 +1108,16 @@ async function restoreDevice(manifest, imageMap) {
 			}
 		}
 
-		// Traces
-		if (boardData.traces) {
-			for (const trace of boardData.traces) {
+		// Drawings
+		if (boardData.drawings) {
+			for (const drawing of boardData.drawings) {
 				// Ensure correct association
-				trace.projectId = boardId;
+				drawing.projectId = boardId;
 				if (isNewer) {
-					await db.addTrace(trace);
+					await db.addDrawing(drawing);
 				} else {
-					const existingTrace = await db._tx('traces', 'readonly', s => s.get(trace.id));
-					if (!existingTrace) await db.addTrace(trace);
+					const existingDrawing = await db._tx('drawings', 'readonly', s => s.get(drawing.id));
+					if (!existingDrawing) await db.addDrawing(drawing);
 				}
 			}
 		}
@@ -1231,12 +1233,12 @@ async function processImportData(data, imageMap) {
 			if (!importNetIds.has(ln.id)) await db.deleteNet(ln.id);
 		}
 
-		// 5. Traces
-		const allTraces = await db.getTraces();
-		const localTraces = allTraces.filter(t => t.projectId === boardId);
-		const importTraceIds = new Set((data.traces || []).map(t => t.id));
-		for (const lt of localTraces) {
-			if (!importTraceIds.has(lt.id)) await db.deleteTrace(lt.id);
+		// 5. Drawings
+		const allDrawings = await db.getDrawings();
+		const localDrawings = allDrawings.filter(t => t.projectId === boardId);
+		const importDrawingIds = new Set((data.drawings || []).map(t => t.id));
+		for (const lt of localDrawings) {
+			if (!importDrawingIds.has(lt.id)) await db.deleteDrawing(lt.id);
 		}
 
 		// 6. Schemas
@@ -1308,15 +1310,15 @@ async function processImportData(data, imageMap) {
 		}
 	}
 
-	// Traces
-	if (data.traces) {
-		for (const trace of data.traces) {
-			trace.projectId = boardId;
+	// Drawings
+	if (data.drawings) {
+		for (const drawing of data.drawings) {
+			drawing.projectId = boardId;
 			if (isNewer) {
-				await db.addTrace(trace);
+				await db.addDrawing(drawing);
 			} else {
-				const existing = await db._tx('traces', 'readonly', s => s.get(trace.id));
-				if (!existing) await db.addTrace(trace);
+				const existing = await db._tx('drawings', 'readonly', s => s.get(drawing.id));
+				if (!existing) await db.addDrawing(drawing);
 			}
 		}
 	}
