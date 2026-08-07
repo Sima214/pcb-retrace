@@ -51,6 +51,9 @@ class PanZoomCanvas {
 		this.canvas.style.touchAction = 'none';
 
 		this.canvas.addEventListener('wheel', e => {
+			// Mask zoom functionality if modifier keys (like Shift or Alt) are pressed.
+			// We allow Ctrl as it is sometimes triggered by trackpad pinch-to-zoom.
+			if (e.shiftKey || e.altKey) return;
 			e.preventDefault();
 			const f = Math.exp(-e.deltaY * 0.001);
 			this.zoomAt(e.clientX, e.clientY, f);

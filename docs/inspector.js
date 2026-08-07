@@ -44,6 +44,9 @@ class Inspector {
         this.grid = document.getElementById('inspect-grid');
         this.sidebarList = document.getElementById('inspect-layers');
         this.activeNetEl = document.getElementById('inspect-active-net');
+        // Drawing toolbar:
+        this.drawingWidthContainer = document.getElementById('drawing-width-container');
+        this.drawingWidthSlider = document.getElementById('drawing-width-slider');
 
         this.viewers = {};
         this.visibleIds = new Set();
@@ -803,7 +806,22 @@ class Inspector {
                 }
             });
 
-            cvs.addEventListener('wheel', () => { viewer.userInteracted = true; });
+            cvs.addEventListener('wheel', (e) => {
+                // With shift key modifier.
+                if (!e.ctrlKey && !e.altKey && e.shiftKey && this.currentDrawing) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const delta = e.deltaY > 0 ? -2 : 2;
+                    this.currentDrawing.width = Math.max(1, Math.min(100, (this.currentDrawing.width || Inspector.DRAW_LINE_DEFAULT_WIDTH) + delta));
+                    if (this.drawingWidthSlider) {
+                        this.drawingWidthSlider.value = this.currentDrawing.width;
+                    }
+                    this.updateDrawings();
+                }
+                else {
+                    viewer.userInteracted = true;
+                }
+            }, { capture: true, passive: false });
 
             viewer.onMouseMove = (x, y) => {
                 if (this.masterId === id) {
@@ -1540,10 +1558,20 @@ class Inspector {
         if (this.currentDrawing) {
             return null;
         }
+		let startingWidth = Inspector.DRAW_LINE_DEFAULT_WIDTH;
+		if (this.drawingWidthSlider && this.drawingWidthSlider.value) {
+			startingWidth = parseInt(this.drawingWidthSlider.value);
+		}
+
         this.currentDrawing = {
             id: uuid(), imgId: imgId, points: [firstPoint],
-            width: Inspector.DRAW_LINE_DEFAULT_WIDTH
+            width: startingWidth
         };
+
+        if (this.drawingWidthContainer && this.drawingWidthSlider) {
+            this.drawingWidthContainer.style.display = 'flex';
+        }
+
         this.updateDrawings();
         return this.currentDrawing;
     }
@@ -1565,16 +1593,26 @@ class Inspector {
         this.currentDrawing.projectId = currentBomId;
         await this.db.addDrawing(this.currentDrawing);
         this.currentDrawing = null;
+        if (this.drawingWidthContainer) {
+			sliderContainer.style.display = 'none';
+		}
         this.updateDrawings();
         return true;
     }
     cancelDrawing() {
         this.currentDrawing = null;
+        if (this.drawingWidthContainer) {
+			sliderContainer.style.display = 'none';
+		}
         this.updateDrawings();
     }
     async deleteDrawing(o) {
         await this.db.deleteDrawing(o.id);
         await this.updateDrawingsCacheAndRedraw();
+    }
+    updateDrawingLineWidth() {
+        this.currentDrawing.width = parseInt(this.drawingWidthSlider.value);
+        this.updateDrawings();
     }
     updateDrawings() {
         return this.updateDrawingsCacheAndRedraw();
