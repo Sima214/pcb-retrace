@@ -651,7 +651,7 @@ ${encNote}
 `;
 	await zipWriter.add('README.txt', new TextReader(readmeContent));
 
-	const manifest = { device: dev, version: window.PcbDbCore.db.ver, source: 'pcb.etaras.com', boards: [] };
+	const manifest = { device: dev, version: db.ver, source: 'pcb.etaras.com', boards: [] };
 
 	for (const bom of boms) {
 		const comps = await db.getComponents(bom.id);

@@ -1594,7 +1594,7 @@ class Inspector {
         await this.db.addDrawing(this.currentDrawing);
         this.currentDrawing = null;
         if (this.drawingWidthContainer) {
-			sliderContainer.style.display = 'none';
+			this.drawingWidthContainer.style.display = 'none';
 		}
         this.updateDrawings();
         return true;
@@ -1602,7 +1602,7 @@ class Inspector {
     cancelDrawing() {
         this.currentDrawing = null;
         if (this.drawingWidthContainer) {
-			sliderContainer.style.display = 'none';
+			this.drawingWidthContainer.style.display = 'none';
 		}
         this.updateDrawings();
     }
